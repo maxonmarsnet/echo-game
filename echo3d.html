@@ -99,6 +99,12 @@
     transform:translate(-50%,-50%); box-shadow:0 0 6px #ff6a6a; background:#ff6a6a; border-radius:50%; }
   #scope .rng { position:absolute; bottom:16%; left:0; right:0; text-align:center;
     color:#5fd0ff; letter-spacing:4px; font-size:12px; text-shadow:0 0 8px rgba(90,220,255,.8); }
+  #minimap { position:absolute; top:16px; left:50%; transform:translateX(-50%);
+    background:rgba(8,10,20,.5); border:1px solid rgba(110,150,255,.35);
+    box-shadow:0 0 16px rgba(40,70,160,.3); border-radius:4px; }
+  #combo { position:absolute; top:190px; left:0; right:0; text-align:center; opacity:0;
+    color:#ffd479; font-weight:bold; letter-spacing:3px; font-size:22px;
+    text-shadow:0 0 14px rgba(255,200,100,.85); transition:opacity .12s; }
   /* enemy name tags + comic taunt bubbles */
   .nametag { position:absolute; transform:translate(-50%,-100%); pointer-events:none;
     white-space:nowrap; font-weight:bold; font-size:13px; letter-spacing:1px;
@@ -139,6 +145,8 @@
     <div id="dashTag">⟫ DASH READY</div>
   </div>
 
+  <canvas id="minimap" width="150" height="166"></canvas>
+  <div id="combo"></div>
   <div id="announce"></div>
   <div id="frozen">— TIME STOPPED —</div>
   <div id="cross"></div>
@@ -149,7 +157,7 @@
     <div>
       <h1>ECHO</h1>
       <p>
-        survive the maze — the ghosts are hunting you<br><br>
+        survive the maze — something is hunting you<br><br>
         <span class="key">WASD</span> — move &nbsp;·&nbsp; <span class="key">MOUSE</span> — look<br>
         <span class="key">HOLD CLICK</span> — fire (infinite) &nbsp;·&nbsp; <span class="key">SHIFT</span> — dash<br>
         eat pellets for points · power pellets make ghosts flee<br><br>
@@ -172,6 +180,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // ====================================================================
 //  RENDERER + POST
@@ -188,6 +197,10 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05060f);     // dark arcade void
 scene.fog = new THREE.FogExp2(0x06070f, 0.006);   // maze fades into black
+
+// environment map — gives the realistic PBR metal weapons something to reflect
+const _pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = _pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 // ---- toon / cartoon helpers ----
 function toonRamp(steps){
@@ -300,6 +313,8 @@ for (let i = 0; i < 4; i++) {
 // ---------- designed level layout: cover & obstacles ----------
 const obstacles = [];   // AABBs in XZ: {minx,maxx,minz,maxz,top}
 let brick=null, brickObstacle=null, portal=null, portalActive=false, level=1, bossFight=false;
+let finalFight=false, won=false;
+let combo=0, comboT=0, heartT=0;
 const pellets = [];                 // collectible maze dots
 let mazeSpawn = new THREE.Vector3(0,1.7,0);
 const crateMat = toon(0xe8a23c);    // wooden-crate orange
@@ -470,129 +485,99 @@ function blockedAt(x, y, z) {            // for bullets: is point inside any tal
 }
 
 // ====================================================================
-//  VIEWMODEL (detailed sci-fi sidearm)
+//  VIEWMODEL (gritty realistic firearms — PBR metal)
 // ====================================================================
 const gun = new THREE.Group();              // whole weapon (kicks on fire)
+const pistol = new THREE.Group();           // pistol parts (hidden when bazooka equipped)
 const slide = new THREE.Group();            // top slide (racks back on fire)
 
-const metalMat = toon(0x3a4150);
-const darkMat  = toon(0x23262f);
-const gripMat  = toon(0x4a3a2a);
-const accentMat= new THREE.MeshBasicMaterial({ color: 0x55d6ff });   // glowing energy (blooms)
-const cellMat  = toon(0x2a8fd0, 0x39c8ff, 1.6);
+const steelMat   = new THREE.MeshStandardMaterial({ color:0x3a3e46, metalness:0.95, roughness:0.4, envMapIntensity:1.1 });
+const blackSteel = new THREE.MeshStandardMaterial({ color:0x15171c, metalness:0.9, roughness:0.32, envMapIntensity:1.1 });
+const polymerMat = new THREE.MeshStandardMaterial({ color:0x0f1115, metalness:0.1, roughness:0.85 });
+const sightDot   = new THREE.MeshBasicMaterial({ color:0xff3b3b });
 
 function box(w,h,d,mat){ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat); m.castShadow=true; return m; }
 
-// --- lower receiver / frame ---
-const frame = box(0.13, 0.11, 0.46, metalMat);  frame.position.set(0,0,-0.12);  gun.add(frame);
-const frameFront = box(0.12, 0.08, 0.18, darkMat); frameFront.position.set(0,-0.01,-0.36); gun.add(frameFront);
+// --- polymer frame / lower ---
+const frame = box(0.12, 0.09, 0.46, polymerMat); frame.position.set(0,0,-0.12); pistol.add(frame);
+const dustCover = box(0.115, 0.05, 0.2, polymerMat); dustCover.position.set(0,-0.02,-0.34); pistol.add(dustCover);
+// --- grip (angled) with stippling ---
+const grip = box(0.115, 0.36, 0.15, polymerMat); grip.position.set(0,-0.23,0.05); grip.rotation.x=0.34; pistol.add(grip);
+for (let i=0;i<5;i++){ const r=box(0.118,0.012,0.14,blackSteel); r.position.set(0,-0.13-i*0.045,0.05+i*0.016); r.rotation.x=0.34; pistol.add(r); }
+const magPlate = box(0.125, 0.03, 0.16, blackSteel); magPlate.position.set(0,-0.42,0.085); magPlate.rotation.x=0.34; pistol.add(magPlate);
+// --- trigger guard + trigger ---
+const guard = new THREE.Mesh(new THREE.TorusGeometry(0.052, 0.013, 10, 18), blackSteel);
+guard.position.set(0,-0.09,-0.05); guard.rotation.y=Math.PI/2; pistol.add(guard);
+const trigger = box(0.018,0.05,0.014,blackSteel); trigger.position.set(0,-0.085,-0.045); pistol.add(trigger);
 
-// --- grip (angled back) ---
-const grip = box(0.12, 0.34, 0.14, gripMat);
-grip.position.set(0, -0.21, 0.04); grip.rotation.x = 0.32; gun.add(grip);
-// grip texture ridges
-for (let i=0;i<4;i++){ const r=box(0.122,0.018,0.13,darkMat); r.position.set(0,-0.12-i*0.05,0.04+ i*0.016); r.rotation.x=0.32; gun.add(r); }
-// magazine base
-const mag = box(0.11, 0.06, 0.13, darkMat); mag.position.set(0,-0.4,0.07); mag.rotation.x=0.32; gun.add(mag);
-const magGlow = box(0.085, 0.02, 0.105, accentMat); magGlow.position.set(0,-0.4,0.075); magGlow.rotation.x=0.32; gun.add(magGlow);
+// --- SLIDE (steel, animated) ---
+const slideBody = box(0.125, 0.115, 0.54, steelMat); slideBody.position.set(0,0.105,-0.12); slide.add(slideBody);
+for (let i=0;i<6;i++){ const s=box(0.128,0.09,0.012,blackSteel); s.position.set(0,0.105,0.08 - i*0.022); slide.add(s); }   // serrations
+const port = box(0.066, 0.05, 0.14, blackSteel); port.position.set(0.045,0.12,-0.16); slide.add(port);                  // ejection port
+const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.042,0.042,0.1,16), blackSteel);
+barrel.rotation.x=Math.PI/2; barrel.position.set(0,0.105,-0.41); slide.add(barrel);
+const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,0.04,16), polymerMat);
+crown.rotation.x=Math.PI/2; crown.position.set(0,0.105,-0.45); slide.add(crown);
+// iron sights with tritium dots
+const rearSight = box(0.085,0.03,0.025,blackSteel); rearSight.position.set(0,0.175,0.06); slide.add(rearSight);
+const rNotch = box(0.016,0.032,0.027,steelMat); rNotch.position.set(0,0.178,0.06); slide.add(rNotch);
+for (const dx of [-0.03,0.03]){ const dd=new THREE.Mesh(new THREE.SphereGeometry(0.01,8,8), sightDot); dd.position.set(dx,0.176,0.06); slide.add(dd); }
+const frontSight = box(0.012,0.032,0.018,blackSteel); frontSight.position.set(0,0.176,-0.36); slide.add(frontSight);
+const fDot = new THREE.Mesh(new THREE.SphereGeometry(0.011,8,8), sightDot); fDot.position.set(0,0.18,-0.36); slide.add(fDot);
 
-// --- trigger guard (ring) ---
-const guard = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.014, 8, 16), metalMat);
-guard.position.set(0,-0.09,-0.04); guard.rotation.y=Math.PI/2; gun.add(guard);
-const trigger = box(0.02,0.05,0.015,darkMat); trigger.position.set(0,-0.08,-0.03); gun.add(trigger);
-
-// --- energy cell on side ---
-const cell = box(0.03, 0.07, 0.22, cellMat); cell.position.set(0.075,0,-0.1); gun.add(cell);
-
-// --- SLIDE (animated) ---
-const slideBody = box(0.135, 0.1, 0.5, metalMat); slideBody.position.set(0,0.1,-0.12); slide.add(slideBody);
-const slideTop  = box(0.1, 0.03, 0.52, darkMat);  slideTop.position.set(0,0.16,-0.12);  slide.add(slideTop);
-// ejection port + accent line
-const portLine = box(0.005, 0.04, 0.3, accentMat); portLine.position.set(0.069,0.1,-0.1); slide.add(portLine);
-// barrel + muzzle
-const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,0.16,14), darkMat);
-barrel.rotation.x=Math.PI/2; barrel.position.set(0,0.1,-0.42); slide.add(barrel);
-const muzzleRing = new THREE.Mesh(new THREE.TorusGeometry(0.045,0.012,8,16), accentMat);
-muzzleRing.position.set(0,0.1,-0.5); slide.add(muzzleRing);
-// iron sights
-const rearSight = box(0.07,0.025,0.02,darkMat); rearSight.position.set(0,0.185,0.08); slide.add(rearSight);
-const rearNotch = box(0.015,0.026,0.022,metalMat); rearNotch.position.set(0,0.188,0.08); slide.add(rearNotch);
-const frontSight = box(0.012,0.03,0.015,accentMat); frontSight.position.set(0,0.19,-0.34); slide.add(frontSight);
-
-gun.add(slide);
+pistol.add(slide);
+gun.add(pistol);
 gun.position.set(0.26, -0.30, -0.55);
-gun.rotation.set(0.02, -0.04, 0);
+gun.rotation.set(0.03, -0.05, 0);
 camera.add(gun);
 scene.add(camera);
 
-// muzzle flash (at barrel tip, in slide space)
+// muzzle flash (shared; repositioned for the bazooka on unlock) + eject port
 const muzzle = new THREE.PointLight(0xfff0c0, 0, 14, 2);
-muzzle.position.set(0, 0.1, -0.58); slide.add(muzzle);
-const muzzleFlash = new THREE.Mesh(
-  new THREE.SphereGeometry(0.13, 8, 8),
-  new THREE.MeshBasicMaterial({ color: 0xffe9b0, transparent: true, opacity: 0 })
-);
-muzzleFlash.position.set(0, 0.1, -0.58); slide.add(muzzleFlash);
-// star-shaped flash plane for shape variety
-const flashStar = new THREE.Mesh(
-  new THREE.PlaneGeometry(0.5, 0.5),
-  new THREE.MeshBasicMaterial({ color: 0xffd070, transparent:true, opacity:0,
-    blending:THREE.AdditiveBlending, depthWrite:false })
-);
-flashStar.position.set(0, 0.1, -0.6); slide.add(flashStar);
-// ejection port marker (world-space casing spawns from here)
-const ejectPort = new THREE.Object3D(); ejectPort.position.set(0.09, 0.13, -0.05); slide.add(ejectPort);
+muzzle.position.set(0, 0.105, -0.52); gun.add(muzzle);
+const muzzleFlash = new THREE.Mesh(new THREE.SphereGeometry(0.13,8,8),
+  new THREE.MeshBasicMaterial({ color:0xffe9b0, transparent:true, opacity:0 }));
+muzzleFlash.position.set(0,0.105,-0.52); gun.add(muzzleFlash);
+const flashStar = new THREE.Mesh(new THREE.PlaneGeometry(0.5,0.5),
+  new THREE.MeshBasicMaterial({ color:0xffd070, transparent:true, opacity:0, blending:THREE.AdditiveBlending, depthWrite:false }));
+flashStar.position.set(0,0.105,-0.54); gun.add(flashStar);
+const ejectPort = new THREE.Object3D(); ejectPort.position.set(0.08, 0.14, -0.12); slide.add(ejectPort);
 
-// ---- futuristic energy launcher with sniper scope (hidden until unlocked) ----
+// ---- realistic shoulder-fired launcher (hidden until unlocked) with optic ----
 const bazooka = new THREE.Group();
-const bzBody  = toon(0x3a7a3a);    // toy-army green launcher
-const bzPlate = toon(0x2c5e2c);
-const bzCyan  = new THREE.MeshBasicMaterial({ color:0x45e0ff });   // glowing energy (blooms)
-const bzCore  = new THREE.MeshBasicMaterial({ color:0x9af0ff });
-const bzHot   = new THREE.MeshBasicMaterial({ color:0xff9a40 });   // muzzle heat
+const oliveMat  = new THREE.MeshStandardMaterial({ color:0x46512c, metalness:0.55, roughness:0.55, envMapIntensity:1.0 });
+const oliveDark = new THREE.MeshStandardMaterial({ color:0x2e3620, metalness:0.55, roughness:0.62 });
+const warheadMat= new THREE.MeshStandardMaterial({ color:0x6a3b22, metalness:0.45, roughness:0.5 });
 
-// main hex tube
-const bzTube = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.13, 0.95, 6), bzBody);
-bzTube.rotation.x = Math.PI/2; bzTube.rotation.z = Math.PI/6; bzTube.position.set(0,0.05,-0.32); bazooka.add(bzTube);
-// slimmer rear receiver
-const bzRear = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,0.34,6), bzPlate);
-bzRear.rotation.x = Math.PI/2; bzRear.rotation.z = Math.PI/6; bzRear.position.set(0,0.05,0.18); bazooka.add(bzRear);
-// energy coils along the barrel
-for (let i=0;i<3;i++){
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.135, 0.018, 8, 24), bzCyan);
-  ring.position.set(0,0.05,-0.05 - i*0.22); bazooka.add(ring);
-}
-// exposed glowing core (sits in a side channel)
-const bzChannel = new THREE.Mesh(new THREE.BoxGeometry(0.04,0.05,0.5), bzCore);
-bzChannel.position.set(0.085,0.08,-0.2); bazooka.add(bzChannel);
-const bzChannel2 = bzChannel.clone(); bzChannel2.position.x = -0.085; bazooka.add(bzChannel2);
-// muzzle aperture
-const bzMouth = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.035, 10, 24), bzBody);
-bzMouth.position.set(0,0.05,-0.82); bazooka.add(bzMouth);
-const bzMouthGlow = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.022, 8, 24), bzHot);
-bzMouthGlow.position.set(0,0.05,-0.81); bazooka.add(bzMouthGlow);
-// rear stabilizer fins
-for (let i=0;i<4;i++){
-  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.02,0.16,0.18), bzPlate);
-  const a = i*Math.PI/2;
-  fin.position.set(Math.cos(a)*0.13, 0.05+Math.sin(a)*0.13, 0.26);
-  fin.rotation.z = a; bazooka.add(fin);
-}
+const bzTube = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,1.0,24), oliveMat);
+bzTube.rotation.x=Math.PI/2; bzTube.position.set(0,0.05,-0.25); bazooka.add(bzTube);
+for (const z of [-0.55,-0.32,0.0]){ const b=new THREE.Mesh(new THREE.CylinderGeometry(0.125,0.125,0.05,24), oliveDark); b.rotation.x=Math.PI/2; b.position.set(0,0.05,z); bazooka.add(b); }
+const venturi = new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.12,0.22,24,1,true), oliveDark);
+venturi.rotation.x=-Math.PI/2; venturi.position.set(0,0.05,0.36); bazooka.add(venturi);
+const frontRing = new THREE.Mesh(new THREE.CylinderGeometry(0.14,0.13,0.08,24), oliveDark);
+frontRing.rotation.x=Math.PI/2; frontRing.position.set(0,0.05,-0.74); bazooka.add(frontRing);
+const warhead = new THREE.Mesh(new THREE.ConeGeometry(0.1,0.26,20), warheadMat);
+warhead.rotation.x=-Math.PI/2; warhead.position.set(0,0.05,-0.92); bazooka.add(warhead);
+const warBand = new THREE.Mesh(new THREE.CylinderGeometry(0.105,0.105,0.05,20), blackSteel);
+warBand.rotation.x=Math.PI/2; warBand.position.set(0,0.05,-0.8); bazooka.add(warBand);
+// pistol grip + trigger + forward grip + shoulder rest
+const bzGrip = box(0.07,0.24,0.1,polymerMat); bzGrip.position.set(0,-0.16,0.02); bzGrip.rotation.x=0.2; bazooka.add(bzGrip);
+const bzGuard = new THREE.Mesh(new THREE.TorusGeometry(0.05,0.012,8,16), oliveDark); bzGuard.position.set(0,-0.05,-0.02); bzGuard.rotation.y=Math.PI/2; bazooka.add(bzGuard);
+const bzFgrip = box(0.06,0.2,0.08,polymerMat); bzFgrip.position.set(0,-0.13,-0.42); bzFgrip.rotation.x=-0.15; bazooka.add(bzFgrip);
+const rest = box(0.14,0.18,0.04,oliveDark); rest.position.set(0,-0.02,0.48); bazooka.add(rest);
 
-// ---- sniper scope on top ----
+// ---- optic on top (real glass) ----
 const scope = new THREE.Group();
-const scTube = new THREE.Mesh(new THREE.CylinderGeometry(0.055,0.055,0.4,18), bzBody);
-scTube.rotation.x = Math.PI/2; scope.add(scTube);
-const scFront = new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.06,0.06,18), bzPlate);
-scFront.rotation.x = Math.PI/2; scFront.position.z = -0.22; scope.add(scFront);
-const scLensF = new THREE.Mesh(new THREE.CircleGeometry(0.055,18), bzCyan);
-scLensF.position.z = -0.251; scope.add(scLensF);
-const scLensR = new THREE.Mesh(new THREE.CircleGeometry(0.05,18),
-  new THREE.MeshBasicMaterial({ color:0x66e0ff })); scLensR.rotation.y = Math.PI; scLensR.position.z = 0.201; scope.add(scLensR);
-// mount posts
-const post1 = new THREE.Mesh(new THREE.BoxGeometry(0.03,0.08,0.03), bzPlate); post1.position.set(0,-0.09,-0.12); scope.add(post1);
-const post2 = post1.clone(); post2.position.z = 0.12; scope.add(post2);
-scope.position.set(0,0.2,-0.18); bazooka.add(scope);
+const glassMat = new THREE.MeshStandardMaterial({ color:0x122c3a, metalness:0.4, roughness:0.08, envMapIntensity:1.6 });
+const scTube = new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,0.34,18), blackSteel);
+scTube.rotation.x=Math.PI/2; scope.add(scTube);
+const scFront = new THREE.Mesh(new THREE.CylinderGeometry(0.065,0.055,0.06,18), blackSteel);
+scFront.rotation.x=Math.PI/2; scFront.position.z=-0.2; scope.add(scFront);
+const scLensF = new THREE.Mesh(new THREE.CircleGeometry(0.05,18), glassMat); scLensF.position.z=-0.231; scope.add(scLensF);
+const scLensR = new THREE.Mesh(new THREE.CircleGeometry(0.045,18), glassMat); scLensR.rotation.y=Math.PI; scLensR.position.z=0.171; scope.add(scLensR);
+const post1 = box(0.025,0.08,0.025,oliveDark); post1.position.set(0,-0.1,-0.1); scope.add(post1);
+const post2 = post1.clone(); post2.position.z=0.1; scope.add(post2);
+scope.position.set(0,0.2,-0.16); bazooka.add(scope);
 
 bazooka.visible = false;
 gun.add(bazooka);
@@ -707,6 +692,7 @@ const sfx = {
   },
   empty(){ tone(140, 0.06, 0.15, 'square'); },
   over(){ tone(110, 1.2, 0.4, 'sawtooth', 30); noise(1.0, 300, 0.5, 0.3, 'lowpass'); },
+  spot(){ tone(70, 0.28, 0.32, 'sawtooth', 44); noise(0.22, 260, 1, 0.16, 'lowpass'); },  // menacing stinger
 };
 
 // enemy footstep — soft shuffle, volume by distance, stereo-panned by direction
@@ -723,6 +709,16 @@ function enemyStep(vol, pan){
   o.frequency.setValueAtTime(72, t); o.frequency.exponentialRampToValueAtTime(46, t+0.1);
   og.gain.setValueAtTime(vol*0.8, t); og.gain.exponentialRampToValueAtTime(0.0005, t+0.12);
   o.connect(og); og.connect(pn); o.start(t); o.stop(t+0.13);
+}
+// tension heartbeat — rises as the nearest monster closes in
+function heartbeat(vol){
+  if (!actx) return; const t = actx.currentTime;
+  const beat=(f,delay,v)=>{ const o=actx.createOscillator(); o.type='sine'; const g=actx.createGain();
+    o.frequency.setValueAtTime(f,t+delay); o.frequency.exponentialRampToValueAtTime(f*0.6,t+delay+0.13);
+    g.gain.setValueAtTime(0.0001,t+delay); g.gain.exponentialRampToValueAtTime(v,t+delay+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+delay+0.17);
+    o.connect(g); g.connect(master); o.start(t+delay); o.stop(t+delay+0.2); };
+  beat(60,0,vol); beat(52,0.17,vol*0.7);   // lub-dub
 }
 
 // ====================================================================
@@ -841,43 +837,86 @@ function makeTopper(acc){
   } else return null;
   return g;
 }
-function makeGhost(color, s, acc){
+const fangMat = new THREE.MeshBasicMaterial({ color: 0xe6ddca });
+const mawMat  = new THREE.MeshBasicMaterial({ color: 0x140707 });
+// menacing original monster — hunched, horned, fanged, glowing eyes. Faces -Z.
+function makeGhost(color, s, acc, eyeColor=0xff3020){
   const g = new THREE.Group();
-  const bodyMat = toon(color, color, 0.45);
-  const dome = new THREE.Mesh(new THREE.SphereGeometry(1, 18, 12, 0, Math.PI*2, 0, Math.PI/2), bodyMat);
-  outline(dome, 1.06);
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1.05, 18), bodyMat);
-  body.position.y = -0.52; outline(body, 1.05);
-  g.add(dome, body);
-  const top = makeTopper(acc); if (top) g.add(top);
-  // wavy skirt — bumps along the bottom
-  for (let i=0;i<5;i++){
-    const bump = new THREE.Mesh(new THREE.SphereGeometry(0.31, 10, 8), bodyMat);
-    bump.position.set(-0.8 + i*0.4, -1.04, 0); g.add(bump);
+  const bodyMat = toon(color, color, 0.25);
+  const clawMat = toon(0x14151b);
+  const eyeMat  = new THREE.MeshBasicMaterial({ color: eyeColor });
+  // hunched torso
+  const torso = new THREE.Mesh(new THREE.SphereGeometry(1.0, 18, 16), bodyMat);
+  torso.scale.set(1.15, 1.1, 1.0); torso.position.set(0, -0.1, 0.1); outline(torso, 1.05); g.add(torso);
+  // hunched shoulders
+  for (const sx of [-0.8, 0.8]){
+    const sh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 14, 12), bodyMat);
+    sh.position.set(sx, 0.55, 0.15); outline(sh, 1.06); g.add(sh);
   }
-  // eyes (white) + pupils (blue) facing -Z
+  // head thrust forward + down
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.62, 16, 14), bodyMat);
+  head.position.set(0, 0.45, -0.7); head.scale.set(1, 0.9, 1.1); outline(head, 1.06); g.add(head);
+  // angry brow
+  const brow = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.16, 0.2), clawMat);
+  brow.position.set(0, 0.62, -1.04); brow.rotation.x = 0.3; g.add(brow);
+  // glowing slit eyes
+  for (const sx of [-0.22, 0.22]){
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), eyeMat);
+    eye.position.set(sx, 0.46, -1.12); eye.scale.set(1.4, 0.6, 0.6); g.add(eye);
+  }
+  // gaping maw + two rows of fangs
+  const maw = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 10), mawMat);
+  maw.position.set(0, 0.18, -1.04); maw.scale.set(1.15, 0.85, 0.7); g.add(maw);
+  for (let i=0;i<5;i++){
+    const x = -0.18 + i*0.09;
+    const f1 = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.18, 6), fangMat); f1.position.set(x, 0.27, -1.18); f1.rotation.x = Math.PI; g.add(f1);
+    const f2 = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.16, 6), fangMat); f2.position.set(x+0.04, 0.07, -1.18); g.add(f2);
+  }
+  // curved horns
+  for (const sx of [-0.32, 0.32]){
+    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.62, 8), clawMat);
+    horn.position.set(sx, 0.95, -0.5); horn.rotation.set(-0.5, 0, sx>0?0.35:-0.35); outline(horn, 1.08); g.add(horn);
+  }
+  // jagged back spikes
+  for (let i=0;i<4;i++){
+    const sp = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.45 - i*0.06, 6), clawMat);
+    sp.position.set(0, 0.45 - i*0.26, 0.55 + i*0.12); sp.rotation.x = -0.5; g.add(sp);
+  }
+  // arms ending in claws
+  for (const sx of [-1.0, 1.0]){
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.95, 10), bodyMat);
+    arm.position.set(sx, -0.25, -0.15); arm.rotation.z = sx>0?0.35:-0.35; arm.rotation.x = -0.35; outline(arm, 1.06); g.add(arm);
+    for (let c=0;c<3;c++){
+      const claw = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.3, 6), clawMat);
+      claw.position.set(sx*1.04 + (c-1)*0.13, -0.78, -0.5); claw.rotation.x = -1.6; g.add(claw);
+    }
+  }
+  // clawed feet
   for (const sx of [-0.4, 0.4]){
-    const white = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 12), eyeWhiteMat);
-    white.position.set(sx, 0.12, -0.62); white.scale.z = 0.7; g.add(white);
-    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 10), eyeBlueMat);
-    pupil.position.set(sx, 0.10, -0.84); g.add(pupil);
+    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 10), bodyMat);
+    foot.position.set(sx, -1.12, -0.2); foot.scale.set(1, 0.6, 1.5); g.add(foot);
+    for (let c=0;c<3;c++){ const cl=new THREE.Mesh(new THREE.ConeGeometry(0.05,0.18,6), clawMat); cl.position.set(sx+(c-1)*0.12,-1.16,-0.52); cl.rotation.x=-1.7; g.add(cl); }
+  }
+  // boss: a jagged crown of extra horns
+  if (acc==='crown'){
+    for (let i=0;i<7;i++){ const a=i/7*Math.PI*2; const pk=new THREE.Mesh(new THREE.ConeGeometry(0.12,0.55,6), clawMat); pk.position.set(Math.cos(a)*0.5,1.0,Math.sin(a)*0.5-0.15); pk.rotation.x=-0.3; g.add(pk); }
   }
   g.traverse(o=>{ if (o.isMesh) o.castShadow = true; });
   g.scale.setScalar(s);
   return { group: g, bodyMat, color };
 }
 
-// ---- original comedic cast (rename these to any fictional characters you like) ----
+// ---- original menacing cast (edit names/colors/eyes/taunts freely) ----
 const CHARACTERS = [
-  { name:"Sir Cluck-a-Lot", color:0xffd23a, acc:'comb',    taunt:"BAWK! Ya can't catch me!" },
-  { name:"Captain Honkers",  color:0xff5bd0, acc:'cone',    taunt:"Honk honk! Let's get silly!" },
-  { name:"Unit BZ-7",        color:0x36e0ff, acc:'antenna', taunt:"BEEP BOOP. RESISTANCE IS SILLY." },
-  { name:"Tex Tumbleweed",   color:0xff9b30, acc:'hat',     taunt:"Yeehaw! This maze is MINE, partner!" },
-  { name:"Spooky Steve",     color:0x6bff8a, acc:'none',    taunt:"Boo! Did I getcha?" },
-  { name:"Disco Dan",        color:0xc060ff, acc:'none',    taunt:"Feel the funk, hero!" },
+  { name:"GRAVEMAW",  color:0x6e2a2a, eyes:0xff3020, acc:'none', taunt:"You shouldn't have come here." },
+  { name:"HOLLOW",    color:0x2c3a30, eyes:0x9bff3a, acc:'none', taunt:"I can smell your fear." },
+  { name:"WRAITHE",   color:0x382a52, eyes:0xb060ff, acc:'none', taunt:"This is where you end." },
+  { name:"ASHEN",     color:0x3a3a42, eyes:0xffce3a, acc:'none', taunt:"Run. It won't matter." },
+  { name:"ROTGRUB",   color:0x49391e, eyes:0x8aff5a, acc:'none', taunt:"Your bones are mine." },
+  { name:"CRIMSON",   color:0x5a1e22, eyes:0xff5040, acc:'none', taunt:"No one leaves the maze." },
 ];
-const CHARGER_CHAR = { name:"Zippy McZoom", color:0xff2a2a, acc:'none', taunt:"Too slow! Too slow!" };
-const BOSS_CHAR    = { name:"THE BIG CHEESE", color:0x9b5bff, acc:'crown', taunt:"Bow before THE BIG CHEESE!" };
+const CHARGER_CHAR = { name:"SKITTER", color:0x701818, eyes:0xff2020, acc:'none', taunt:"Too slow to survive." };
+const BOSS_CHAR    = { name:"THE DEVOURER", color:0x3a1438, eyes:0xff3060, acc:'crown', taunt:"I will devour you whole." };
 
 const uiEl = document.getElementById('ui');
 function makeLabel(char){
@@ -890,27 +929,44 @@ function makeLabel(char){
 function spawnWave() {
   wave++;
   if (typeof announce === 'function') announce('WAVE ' + wave);
-  const n = 2 + wave;
+  const n = Math.min(2 + wave, 11);                 // ramps, then caps
+  const sc = 1 + Math.min(wave*0.035, 0.7);          // enemies get faster over time
   for (let i=0;i<n;i++){
     const charger = Math.random() < Math.min(0.15 + wave*0.05, 0.55);
     const char = charger ? CHARGER_CHAR : CHARACTERS[Math.floor(Math.random()*CHARACTERS.length)];
-    const gh = makeGhost(char.color, charger?0.85:1.05, char.acc);
+    const gh = makeGhost(char.color, charger?0.85:1.05, char.acc, char.eyes);
     const cp = farOpenCell(26);
     gh.group.position.set(cp.x, charger?1.3:1.45, cp.z);
     scene.add(gh.group);
     spawnRing(new THREE.Vector3(cp.x, 0.05, cp.z), char.color, 4, true, 0.7);
     enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, col: char.color, char, label: makeLabel(char),
       spotted:false, tauntT:0,
-      hp: charger?1:2, maxhp: charger?1:2, speed: charger?7:3.2, charger, ghost:true,
+      hp: charger?1:2, maxhp: charger?1:2, speed: (charger?7:3.2)*sc, charger, ghost:true,
       rad: charger?1.0:1.3, baseY: charger?1.3:1.45, phase: Math.random()*6.28,
       hit:0, fireCd: charger?0:1.5+Math.random()*2, stepCd: Math.random()*0.4 });
   }
-  if (wave % 3 === 0) spawnBoss();          // a boss every 3rd wave
+  if (wave % 3 === 0) spawnBoss();          // a mini-boss every 3rd wave
+}
+
+// the climactic finale — one giant DEVOURER
+function spawnFinalBoss(){
+  const char = BOSS_CHAR;
+  const gh = makeGhost(char.color, 3.4, char.acc, char.eyes);
+  const cp = farOpenCell(30);
+  gh.group.position.set(cp.x, 3.6, cp.z);
+  scene.add(gh.group);
+  announce('☠  THE DEVOURER  ☠');
+  spawnRing(new THREE.Vector3(cp.x, 0.05, cp.z), char.color, 16, true, 1.2);
+  shake=Math.max(shake,1.0); flashScreen(0.4,'255,60,90');
+  enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, col: char.color, char, label: makeLabel(char),
+    spotted:false, tauntT:0,
+    hp:12, maxhp:12, speed:3.0, charger:false, boss:true, final:true, ghost:true,
+    rad:3.6, baseY:3.6, phase:0, hit:0, fireCd:1.4, stepCd:0.3 });
 }
 
 function spawnBoss() {
   const char = BOSS_CHAR;
-  const gh = makeGhost(char.color, 2.1, char.acc);
+  const gh = makeGhost(char.color, 2.1, char.acc, char.eyes);
   const cp = farOpenCell(30);
   gh.group.position.set(cp.x, 2.7, cp.z);
   scene.add(gh.group);
@@ -1106,7 +1162,30 @@ const $ = id => document.getElementById(id);
 const elWave=$('waveNum'), elScore=$('scoreNum'), elHpRow=$('hpRow'),
       elAmmoBig=$('ammoBig'), elAmmoPips=$('ammoPips'), elDash=$('dashTag'),
       elAnnounce=$('announce'), elHitmark=$('hitmark'),
-      scopeEl=$('scope'), crossEl=$('cross');
+      scopeEl=$('scope'), crossEl=$('cross'), elCombo=$('combo');
+
+// ---------- minimap ----------
+const mmCanvas=$('minimap'), mmCtx=mmCanvas.getContext('2d');
+const MM_W=mmCanvas.width, MM_H=mmCanvas.height, MM_PAD=6;
+const mmCW=(MM_W-MM_PAD*2)/COLS, mmCH=(MM_H-MM_PAD*2)/ROWS;
+const mmX=x=>MM_PAD+((x-OX)/CELL)*mmCW, mmY=z=>MM_PAD+((z-OZ)/CELL)*mmCH;
+function drawMinimap(){
+  mmCtx.clearRect(0,0,MM_W,MM_H);
+  mmCtx.fillStyle='#2536a0';
+  for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++){
+    if ((MAZE[r][c]||'#')==='#') mmCtx.fillRect(MM_PAD+c*mmCW, MM_PAD+r*mmCH, mmCW+0.6, mmCH+0.6);
+  }
+  if (brick){ mmCtx.fillStyle='#ff4040'; mmCtx.fillRect(mmX(-3)-1, mmY(-3)-1, mmCW*1.4, mmCH*1.4); }
+  else if (portal){ mmCtx.fillStyle='#40c8ff'; mmCtx.beginPath(); mmCtx.arc(mmX(0),mmY(0),3.5,0,6.28); mmCtx.fill(); }
+  for (const e of enemies){
+    mmCtx.fillStyle = e.final ? '#ff2060' : (e.boss ? '#ff3a80' : '#ff6a4a');
+    mmCtx.beginPath(); mmCtx.arc(mmX(e.mesh.position.x), mmY(e.mesh.position.z), e.boss?3.6:2.3, 0, 6.28); mmCtx.fill();
+  }
+  const px=mmX(player.pos.x), py=mmY(player.pos.z);
+  mmCtx.save(); mmCtx.translate(px,py); mmCtx.rotate(Math.atan2(-Math.cos(player.yaw), -Math.sin(player.yaw)));
+  mmCtx.fillStyle='#9fe0ff'; mmCtx.beginPath(); mmCtx.moveTo(6,0); mmCtx.lineTo(-4,-3.5); mmCtx.lineTo(-4,3.5); mmCtx.closePath(); mmCtx.fill();
+  mmCtx.restore();
+}
 
 // build pip rows once
 for (let i=0;i<player.maxhp;i++){ const d=document.createElement('div'); d.className='pip'; elHpRow.appendChild(d); }
@@ -1160,6 +1239,7 @@ function update(dt){
   if (player.dashCd>0) player.dashCd-=dt;
   if (fireCd>0) fireCd-=dt;
   if (firing) shoot();                     // hold-to-fire
+  if (comboT>0){ comboT-=dt; if (comboT<=0) combo=0; }   // kill-chain window
 
   // camera
   const bob = moveIntent ? Math.sin(performance.now()*0.012)*0.045 : 0;
@@ -1254,9 +1334,11 @@ function update(dt){
 
   // enemies — navigate the maze toward the player via flow field
   const field = enemies.length ? flowField(player.pos.x, player.pos.z) : null;
+  let nearestEnemy = Infinity;
   for (const e of enemies){
     const toP=new THREE.Vector3().subVectors(camera.position,e.mesh.position); toP.y=0;
     const d=toP.length(); toP.normalize();
+    if (d < nearestEnemy) nearestEnemy = d;
     // steer down the flow-field gradient through corridors; rush straight when close
     let steer = toP;
     if (field && d > CELL*1.3){
@@ -1272,7 +1354,7 @@ function update(dt){
     resolveCircle(e.mesh.position, e.rad*0.8);         // ghosts blocked by maze walls
     // face the player + float-bob through the corridors
     e.mesh.rotation.y = Math.atan2(camera.position.x - e.mesh.position.x, camera.position.z - e.mesh.position.z);
-    e.mesh.position.y = e.baseY + Math.sin(performance.now()*0.004*Math.max(T,0.15) + e.phase)*0.18;
+    e.mesh.position.y = e.baseY + Math.sin(performance.now()*0.004*Math.max(T,0.15) + e.phase)*0.08;
     // colour: frightened blue, else its own hue; flash white on hit
     e.bodyMat.emissiveIntensity = e.hit>0 ? 3.5 : 0.45;
     e.bodyMat.color.set(e.hit>0 ? 0xffffff : (frightened>0 ? 0x2233dd : e.col));
@@ -1307,7 +1389,7 @@ function update(dt){
     const head = _tmpHead.set(e.mesh.position.x, e.baseY + (e.boss?3.8:2.0), e.mesh.position.z).project(camera);
     const onScreen = head.z < 1 && Math.abs(head.x) < 1 && Math.abs(head.y) < 1;
     if (onScreen && d < 55){
-      if (!e.spotted){ e.spotted = true; e.tauntT = 2.6; sfx.pickup(); }
+      if (!e.spotted){ e.spotted = true; e.tauntT = 2.6; sfx.spot(); }
       e.label.style.left = ((head.x*0.5+0.5)*innerWidth)|0 + 'px';
       e.label.style.top  = ((-head.y*0.5+0.5)*innerHeight)|0 + 'px';
       e.label.style.opacity = '1';
@@ -1317,6 +1399,12 @@ function update(dt){
       e.label.style.opacity = '0';
     }
   }
+
+  // tension heartbeat — faster + louder as the nearest monster closes in
+  if (nearestEnemy < 30 && started && !gameOver){
+    heartT -= dt;
+    if (heartT <= 0){ const f = 1 - nearestEnemy/30; heartbeat(0.07 + f*0.18); heartT = 0.8 - f*0.5; }
+  } else heartT = 0;
 
   // sparks
   for (let i=sparks.length-1;i>=0;i--){
@@ -1411,10 +1499,15 @@ function update(dt){
     if (portalActive && level===1 && Math.hypot(player.pos.x, player.pos.z) < 3) enterNextLevel();
   }
 
-  // wave / boss-fight progression
+  // progression: maze waves -> two bosses -> bazooka -> THE DEVOURER finale
   if (enemies.length===0 && started && !gameOver){
-    if (bossFight){ bossFight=false; unlockBazooka(); }   // reward for the two bosses
-    spawnWave();
+    if (bossFight){                     // the two bosses just fell
+      bossFight=false; unlockBazooka();
+      finalFight=true;
+      setTimeout(()=>{ if(!gameOver) spawnFinalBoss(); }, 2600);  // dramatic pause
+    } else if (!finalFight){            // level 1 maze: keep the waves coming
+      spawnWave();
+    }
   }
 
   // UI
@@ -1427,6 +1520,13 @@ function update(dt){
   bloom.strength = 0.35 + frozen*0.3;   // subtle glow, cartoon-friendly
 
   updateHUD();
+  drawMinimap();
+  // combo readout
+  if (combo > 1){
+    const mult = 1 + Math.floor(combo/5)*0.5;
+    elCombo.textContent = `COMBO ×${combo}` + (mult>1 ? `   ×${mult.toFixed(1)}` : '');
+    elCombo.style.opacity = '1';
+  } else elCombo.style.opacity = '0';
 
   if (flashV>0.001){ flashEl.style.opacity=flashV; flashEl.style.background=`rgb(${flashColor})`; flashV*=0.85; }
   else flashEl.style.opacity=0;
@@ -1434,7 +1534,9 @@ function update(dt){
 
 function killEnemy(e){
   const boss = e.boss;
-  score += boss?100:(e.charger?25:15);
+  combo++; comboT = 3.2;                              // keep the chain alive
+  const mult = 1 + Math.floor(combo/5)*0.5;           // x1.5 @5, x2 @10, x2.5 @15...
+  score += Math.round((boss?100:(e.charger?25:15)) * mult);
   const col = boss?0x3a7bff:(e.charger?0xff5050:0xff9030);
   spark(e.mesh.position, col, boss?44:18, boss?18:12);
   shatter(e.mesh.position.clone(), col, boss?34:(e.charger?12:18));     // geometric break-apart
@@ -1451,6 +1553,7 @@ function killEnemy(e){
   }
   if (e.label) e.label.remove();
   scene.remove(e.mesh); enemies.splice(enemies.indexOf(e),1);
+  if (e.final) win();
 }
 
 // ---------- the red brick & the portal to level 2 ----------
@@ -1515,6 +1618,10 @@ function unlockBazooka(){
   if (hasBazooka) return;
   hasBazooka = true;
   bazooka.visible = true;
+  pistol.visible = false;                       // swap pistol out for the launcher
+  muzzle.position.set(0, 0.05, -1.0);           // flash moves to the launcher muzzle
+  muzzleFlash.position.set(0, 0.05, -1.0);
+  flashStar.position.set(0, 0.05, -1.02);
   player.ammo = player.maxAmmo;       // load up
   announce('★ BAZOOKA UNLOCKED ★');
   flashScreen(0.5,'255,170,70'); sfx.pickup();
@@ -1557,6 +1664,30 @@ function endGame(){
       `${bestStr}<br><br>`+
       `<span class="key">press R to echo again</span></p>`;
   },700);
+}
+
+function win(){
+  if (won) return;
+  won = true; gameOver = true;
+  ads=false; gun.visible=true; scopeEl.style.opacity=0; crossEl.style.opacity=1;
+  shake=2.0; flashScreen(0.9,'255,255,200');
+  // celebratory fireworks
+  for (let k=0;k<6;k++) setTimeout(()=>{
+    const a=Math.random()*6.28, r=12+Math.random()*16;
+    spawnRing(new THREE.Vector3(Math.cos(a)*r,2,Math.sin(a)*r), [0xffd23a,0x7fffd0,0xff5bd0][k%3], 7, false, 0.7);
+    spark(new THREE.Vector3(Math.cos(a)*r,3,Math.sin(a)*r), [0xffd23a,0x7fffd0,0xff5bd0][k%3], 26, 14);
+  }, 250*k);
+  document.exitPointerLock();
+  const isBest = score > best.score;
+  if (isBest){ best = { wave, score }; saveBest(best); }
+  setTimeout(()=>{
+    overlay.classList.remove('hidden'); overlay.style.cursor='default';
+    overlay.querySelector('div').innerHTML=
+      `<h1 style="color:#ffe07a">YOU WIN</h1><p>THE DEVOURER has fallen.<br>`+
+      `final score · <span style="color:#ffd479">${score}</span>`+
+      `${isBest?'  <span style="color:#7fffd0">★ NEW BEST ★</span>':''}<br><br>`+
+      `<span class="key">press R to play again</span></p>`;
+  },1400);
 }
 
 function animate(){
