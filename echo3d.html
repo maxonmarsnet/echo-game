@@ -242,6 +242,8 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
 // ====================================================================
 //  RENDERER + POST
@@ -371,11 +373,19 @@ const fxPass = new ShaderPass({
 composer.addPass(fxPass);
 function aberrate(v){ fxPass.uniforms.aberration.value = Math.max(fxPass.uniforms.aberration.value, v); }
 
-addEventListener('resize', () => {
-  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth, innerHeight);
-});
+// ---- full-screen landscape framing ----
+let CW = innerWidth, CH = innerHeight, CL = 0, CT = 0;
+function layout(){
+  CW = innerWidth; CH = innerHeight; CL = 0; CT = 0;
+  renderer.setSize(CW, CH); composer.setSize(CW, CH);
+  camera.aspect = CW/CH; camera.updateProjectionMatrix();
+  const cs = renderer.domElement.style;
+  cs.position=''; cs.left=''; cs.top=''; cs.boxShadow='';
+  const ui = document.getElementById('ui').style;
+  ui.left=''; ui.top=''; ui.width=''; ui.height=''; ui.right=''; ui.bottom='';
+}
+addEventListener('resize', layout);
+layout();
 
 // ====================================================================
 //  LIGHTS
@@ -454,18 +464,26 @@ function addDecal(x, z, w, d, mat=hazardMat, op=0.25) {
   m.rotation.x = -Math.PI/2; m.position.set(x, 0.04, z); scene.add(m);
 }
 
-// central RED destructible brick — 5 shots to break, opens a portal beneath
-const brickMat = toon(0xff4040, 0xff1414, 0.5);
+// central ancient MONOLITH — 5 shots to break, opens the gate beneath
+const ENERGY = 0x46e6c8;                              // alien-tech energy glow (ties hero to ruins)
+const brickStone = new THREE.MeshStandardMaterial({ color:0x7c7666, map:STONE_WALL, roughness:0.95, metalness:0 });
+const brickCoreMat = new THREE.MeshBasicMaterial({ color:ENERGY, transparent:true, opacity:0.8,
+  blending:THREE.AdditiveBlending, depthWrite:false });
 (function makeBrick(){
-  const m = new THREE.Mesh(new THREE.BoxGeometry(6,4,6), brickMat);
+  const m = new THREE.Mesh(new THREE.BoxGeometry(6,4,6), brickStone);
   m.position.set(0,2,0); m.castShadow=true; m.receiveShadow=true; scene.add(m);
   outline(m, 1.04);
-  const trim = new THREE.Mesh(new THREE.BoxGeometry(6.15,0.18,6.15),
-    new THREE.MeshBasicMaterial({ color:0xff7a7a }));
-  trim.position.set(0,4.0,0); scene.add(trim); m.userData.trim = trim;
+  // glowing energy seams down each face
+  for (const [sx,sz,ry] of [[0,3.02,0],[0,-3.02,0],[3.02,0,Math.PI/2],[-3.02,0,Math.PI/2]]){
+    const slit = new THREE.Mesh(new THREE.BoxGeometry(0.5,3.2,0.06), brickCoreMat);
+    slit.position.set(sx,0,sz); slit.rotation.y=ry; m.add(slit);
+  }
+  // mossy crown + a hovering rune orb on top
+  const moss = new THREE.Mesh(new THREE.BoxGeometry(6.25,0.5,6.25), toon(0x4d6e2c)); moss.position.set(0,2.15,0); m.add(moss);
+  const orb = new THREE.Mesh(new THREE.OctahedronGeometry(0.55,0), brickCoreMat); orb.position.set(0,2.7,0); m.add(orb); m.userData.orb = orb;
   brickObstacle = { minx:-3, maxx:3, minz:-3, maxz:3, top:4 };
   obstacles.push(brickObstacle);
-  brick = { mesh:m, hp:5, maxhp:5, hit:0 };
+  brick = { mesh:m, core:brickCoreMat, hp:5, maxhp:5, hit:0 };
 })();
 // ---------- MAZE ----------  (original homage layout)
 const CELL = 5, WALL_H = 4.6;
@@ -501,6 +519,8 @@ const openCells = [];
 const wallMat = new THREE.MeshStandardMaterial({ color:0x8c8672, map:STONE_WALL, roughness:0.95, metalness:0 });  // solid (border) stone
 const wallGeoBase = new THREE.MeshStandardMaterial({ color:0x7e7a64, map:STONE_WALL, roughness:0.95, metalness:0 }); // breakable stone (cloned)
 const mossCapMat = toon(0x4d6e2c);                     // mossy crown on the walls
+const energyVineMat = new THREE.MeshBasicMaterial({ color:ENERGY, transparent:true, opacity:0.85,
+  blending:THREE.AdditiveBlending, depthWrite:false }); // glowing alien-energy seams
 const wallGeo = new THREE.BoxGeometry(CELL, WALL_H, CELL);
 const WALL_HP = 5;
 const pelletGeo = new THREE.SphereGeometry(0.32, 8, 8);
@@ -523,6 +543,15 @@ for (let r=0;r<ROWS;r++){
         cap.position.set(x, WALL_H, z); cap.castShadow = true; scene.add(cap);
         if (!border) m.userData.cap = cap;                   // remove with the wall when broken
       }
+      if (Math.random() < 0.22){                             // glowing energy-vine seam on a face
+        const seam = new THREE.Mesh(new THREE.BoxGeometry(0.12, WALL_H*0.75, 0.06), energyVineMat);
+        const off = CELL/2 + 0.02, f = Math.floor(Math.random()*4);
+        seam.position.set(0, (Math.random()-0.25)*1.2, f===0?-off:f===1?off:0);
+        if (f>=2){ seam.position.x = f===2?-off:off; seam.rotation.y = Math.PI/2; }
+        m.add(seam);                                         // child of wall → removed when it breaks
+        for (let n=0;n<2;n++){ const node = new THREE.Mesh(new THREE.OctahedronGeometry(0.13,0), energyVineMat);
+          node.position.set(seam.position.x, (Math.random()-0.4)*2.4, seam.position.z); m.add(node); }
+      }
       const o = { minx:x-CELL/2, maxx:x+CELL/2, minz:z-CELL/2, maxz:z+CELL/2, top:WALL_H };
       if (!border){ o.destructible=true; o.hp=WALL_HP; o.mesh=m; o.r=r; o.c=c; }   // interior walls break
       obstacles.push(o);
@@ -538,13 +567,19 @@ for (let r=0;r<ROWS;r++){
 // hidden ammo crates tucked in the maze corners (+30 bullets each)
 function spawnAmmoBox(x,z){
   const g = new THREE.Group(); g.position.set(x,0,z);
-  const crate = new THREE.Mesh(new THREE.BoxGeometry(1.5,1.1,1.1), toon(0x39472b));
-  crate.position.y=0.55; crate.castShadow=true; outline(crate,1.04); g.add(crate);
-  const band = new THREE.Mesh(new THREE.BoxGeometry(1.56,0.16,1.16), new THREE.MeshBasicMaterial({color:0xffd23a}));
-  band.position.y=0.55; g.add(band);                    // yellow ammo band
-  const beacon = new THREE.Mesh(new THREE.OctahedronGeometry(0.22,0), new THREE.MeshBasicMaterial({color:0x9fff6a}));
-  beacon.position.y=1.5; g.add(beacon);
-  const light = new THREE.PointLight(0xffe070, 1.2, 9); light.position.y=1.3; g.add(light);
+  // weathered wooden cache chest
+  const chest = new THREE.Mesh(new THREE.BoxGeometry(1.5,0.9,1.1), toon(0x5a3d22));
+  chest.position.y=0.45; chest.castShadow=true; outline(chest,1.04); g.add(chest);
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(1.52,0.4,1.12), toon(0x6a4a28));
+  lid.position.y=1.0; g.add(lid);
+  for (const bz of [-0.4,0.4]){                          // dark metal bands
+    const band = new THREE.Mesh(new THREE.BoxGeometry(1.56,1.0,0.12), toon(0x2a2018));
+    band.position.set(0,0.6,bz); g.add(band);
+  }
+  // glowing ammo artifact rising out of it
+  const beacon = new THREE.Mesh(new THREE.OctahedronGeometry(0.24,0), new THREE.MeshBasicMaterial({color:0xffd23a}));
+  beacon.position.y=1.55; g.add(beacon);
+  const light = new THREE.PointLight(0xffd070, 1.2, 9); light.position.y=1.4; g.add(light);
   scene.add(g);
   ammoBoxes.push({ group:g, beacon, x, z, spin:0 });
 }
@@ -554,6 +589,53 @@ function spawnAmmoBox(x,z){
     let best=null, bd=Infinity;
     for (const c of openCells){ const cp=cellPos(c.r,c.c); const d=Math.hypot(cp.x-tx,cp.z-tz); if (d<bd){ bd=d; best=cp; } }
     if (best) spawnAmmoBox(best.x, best.z);
+  }
+}
+
+// ---------- scatter ruins clutter (decorative; non-colliding) ----------
+const stoneProp = toon(0x807a6a), mossProp = toon(0x46682a), foliageProp = toon(0x4e8a30);
+function propPillar(){
+  const g=new THREE.Group(); const h=1.4+Math.random()*1.9;
+  const col=new THREE.Mesh(new THREE.CylinderGeometry(0.45,0.58,h,8), stoneProp); col.position.y=h/2; g.add(col);
+  const cap=new THREE.Mesh(new THREE.CylinderGeometry(0.52,0.5,0.3,8), mossProp); cap.position.y=h; g.add(cap);
+  g.rotation.z=(Math.random()-0.5)*0.16; return g;
+}
+function propRubble(){
+  const g=new THREE.Group();
+  for (let i=0;i<4+(Math.random()*4|0);i++){ const s=0.3+Math.random()*0.45;
+    const r=new THREE.Mesh(new THREE.DodecahedronGeometry(s,0), stoneProp);
+    r.position.set((Math.random()-0.5)*1.7, s*0.5, (Math.random()-0.5)*1.7);
+    r.rotation.set(Math.random()*3,Math.random()*3,Math.random()*3); g.add(r); }
+  return g;
+}
+function propBush(){
+  const g=new THREE.Group();
+  for (let i=0;i<3+(Math.random()*3|0);i++){ const s=0.4+Math.random()*0.5;
+    const b=new THREE.Mesh(new THREE.IcosahedronGeometry(s,0), Math.random()<0.5?foliageProp:mossProp);
+    b.position.set((Math.random()-0.5)*1.3, 0.35+Math.random()*0.4, (Math.random()-0.5)*1.3); g.add(b); }
+  return g;
+}
+function propColumn(){
+  const g=new THREE.Group();
+  for (let i=0;i<3;i++){ const seg=new THREE.Mesh(new THREE.CylinderGeometry(0.42,0.42,1.0,8), stoneProp);
+    seg.rotation.z=Math.PI/2; seg.position.set(-1.1+i*1.05, 0.42, (Math.random()-0.5)*0.15); g.add(seg); }
+  g.rotation.y=Math.random()*Math.PI; return g;
+}
+{
+  const cells = openCells.slice();
+  for (let i=cells.length-1;i>0;i--){ const j=Math.random()*(i+1)|0; [cells[i],cells[j]]=[cells[j],cells[i]]; }
+  let placed=0;
+  for (const c of cells){
+    if (placed>=40) break;
+    const cp=cellPos(c.r,c.c);
+    if (Math.hypot(cp.x-mazeSpawn.x, cp.z-mazeSpawn.z) < 9) continue;   // keep spawn clear
+    if (Math.hypot(cp.x, cp.z) < 11) continue;                          // keep the monolith clear
+    const t=Math.random();
+    const p = t<0.28 ? propPillar() : t<0.52 ? propRubble() : t<0.8 ? propBush() : propColumn();
+    p.position.set(cp.x+(Math.random()-0.5)*2.2, 0, cp.z+(Math.random()-0.5)*2.2);
+    p.rotation.y += Math.random()*6.28;
+    p.traverse(o=>{ if (o.isMesh) o.castShadow=true; });
+    scene.add(p); placed++;
   }
 }
 
@@ -742,77 +824,93 @@ function updateAim(){
     if (aimDir.lengthSq()>0.0001) aimDir.normalize();
   }
 }
-// player avatar — an ORIGINAL space-ranger / astronaut hero with a laser blaster (faces -Z)
+// player avatar — an ORIGINAL rugged commando ("one-man-army" archetype) with a rifle (faces -Z)
 const avatar = new THREE.Group();
-const suit = toon(0xeceef4), accent = toon(0x2a5cc8), accentDk = toon(0x1c3f8c),
-      avDark = toon(0x1a1f28), skin = toon(0xe3a07a);
-const visorMat = new THREE.MeshBasicMaterial({ color: 0x8fe8ff });
-const thrusterGlow = new THREE.MeshBasicMaterial({ color: 0xff9a3a });
-const panelGlow = new THREE.MeshBasicMaterial({ color: 0x7fffd0 });
+const skin = toon(0xc98b5e), skinDk = toon(0xa9713f);
+const fatigue = toon(0x4a4e2c), fatigueDk = toon(0x33361c), vest = toon(0x2b2d1d);
+const band = toon(0x9a2a22), hair = toon(0x241a12), gunMetal = toon(0x222426), woodMat = toon(0x5a3d22);
 const laserGlow = new THREE.MeshBasicMaterial({ color: 0x50f0ff });
 function part(geo, mat, x,y,z){ const m=new THREE.Mesh(geo,mat); m.position.set(x||0,y||0,z||0); return m; }
 
-// torso (bulky suit) + accent belt + hips
-const avTorso = part(new THREE.BoxGeometry(0.66,0.8,0.4), suit, 0,1.5,0); outline(avTorso,1.05); avatar.add(avTorso);
-avatar.add(part(new THREE.BoxGeometry(0.26,0.18,0.05), panelGlow, 0,1.55,-0.21));   // chest light
-avatar.add(part(new THREE.BoxGeometry(0.68,0.12,0.42), accent, 0,1.16,0));          // belt
-avatar.add(part(new THREE.BoxGeometry(0.58,0.22,0.36), accentDk, 0,1.02,0));        // hips
-// head + space helmet (white dome + glowing visor + antenna)
-avatar.add(part(new THREE.SphereGeometry(0.24,14,12), skin, 0,2.05,0));
-const helmet = part(new THREE.SphereGeometry(0.34,18,16), suit, 0,2.06,0); outline(helmet,1.05); avatar.add(helmet);
-const visor = part(new THREE.SphereGeometry(0.27,16,14), visorMat, 0,2.04,-0.16); visor.scale.set(1,0.7,0.6); avatar.add(visor);
-avatar.add(part(new THREE.CylinderGeometry(0.02,0.02,0.18,6), accent, 0.22,2.34,0));
-avatar.add(part(new THREE.SphereGeometry(0.05,8,8), thrusterGlow, 0.22,2.45,0));
-// jetpack + thrusters on the back (+Z)
-avatar.add(part(new THREE.BoxGeometry(0.5,0.6,0.22), accentDk, 0,1.55,0.28));
-for (const sx of [-0.15,0.15]){
-  avatar.add(part(new THREE.CylinderGeometry(0.08,0.11,0.22,10), avDark, sx,1.18,0.34));
-  const flame = part(new THREE.ConeGeometry(0.08,0.16,8), thrusterGlow, sx,1.0,0.34); flame.rotation.x=Math.PI; avatar.add(flame);
-}
-// shoulder pads
-for (const sx of [-0.42,0.42]) avatar.add(part(new THREE.SphereGeometry(0.17,12,10), accent, sx,1.78,0));
-// helmet neck-ring/collar
-avatar.add(part(new THREE.CylinderGeometry(0.26,0.28,0.12,16), accentDk, 0,1.88,0));
-// faint face (eyes) behind the visor
-for (const sx of [-0.08,0.08]) avatar.add(part(new THREE.SphereGeometry(0.035,8,8), avDark, sx,2.06,-0.22));
-// torso seam lines + air tubes to the helmet
-avatar.add(part(new THREE.BoxGeometry(0.04,0.78,0.42), accentDk, 0,1.5,0));
-for (const sx of [-0.14,0.14]) avatar.add(part(new THREE.CylinderGeometry(0.03,0.03,0.5,6), avDark, sx,1.7,0.2));
-// jetpack vents
-for (const sy of [-0.12,0.06,0.24]) avatar.add(part(new THREE.BoxGeometry(0.42,0.05,0.02), panelGlow, 0,1.55+sy,0.4));
-// legs — pivot at hip so they swing when walking (chunky boots)
-const legGeo = new THREE.CylinderGeometry(0.13,0.12,0.8,10);
-const avLegL = new THREE.Group(); avLegL.position.set(-0.17,0.92,0);
-avLegL.add(part(legGeo, suit, 0,-0.4,0));
-avLegL.add(part(new THREE.SphereGeometry(0.14,10,10), accent, 0,-0.32,-0.07));   // knee pad
-avLegL.add(part(new THREE.BoxGeometry(0.2,0.16,0.34), accentDk, 0,-0.82,-0.05)); // boot
-avLegL.add(part(new THREE.BoxGeometry(0.21,0.05,0.36), accent, 0,-0.9,-0.05));   // sole
+// muscular bare torso + ab/pec hints
+const avTorso = part(new THREE.BoxGeometry(0.98,0.88,0.58), skin, 0,1.5,0); outline(avTorso,1.05); avatar.add(avTorso);
+avatar.add(part(new THREE.BoxGeometry(0.92,0.05,0.59), skinDk, 0,1.55,0));          // pec line
+avatar.add(part(new THREE.BoxGeometry(0.05,0.5,0.59), skinDk, 0,1.45,0));           // ab line
+// fatigue belt + pants top
+avatar.add(part(new THREE.BoxGeometry(0.96,0.16,0.6), fatigueDk, 0,1.1,0));
+avatar.add(part(new THREE.BoxGeometry(0.84,0.26,0.52), fatigue, 0,0.96,0));
+// ammo bandolier across the chest (diagonal strap + rounds)
+const bando = part(new THREE.BoxGeometry(0.14,1.1,0.05), vest, 0,1.5,-0.24); bando.rotation.z=0.72; avatar.add(bando);
+for (let i=0;i<6;i++){ const rnd=part(new THREE.CylinderGeometry(0.03,0.03,0.1,6), toon(0xc8a23a), -0.26+i*0.1, 1.16+i*0.13, -0.26);
+  rnd.rotation.z=2.3; avatar.add(rnd); }
+// head + hair + red headband
+avatar.add(part(new THREE.SphereGeometry(0.27,16,14), skin, 0,2.0,0));
+avatar.add(part(new THREE.SphereGeometry(0.285,16,12,0,Math.PI*2,0,Math.PI*0.62), hair, 0,2.03,0.03));
+const headband = part(new THREE.TorusGeometry(0.275,0.045,8,20), band, 0,2.06,0); headband.rotation.x=Math.PI/2; avatar.add(headband);
+avatar.add(part(new THREE.BoxGeometry(0.05,0.05,0.34), band, -0.16,2.03,0.2));      // trailing headband tails
+avatar.add(part(new THREE.BoxGeometry(0.05,0.05,0.3), band, -0.1,1.99,0.24));
+for (const sx of [-0.09,0.09]) avatar.add(part(new THREE.SphereGeometry(0.03,8,8), toon(0x201810), sx,2.02,-0.25));  // stern eyes
+// neck + big shoulders
+avatar.add(part(new THREE.CylinderGeometry(0.15,0.18,0.16,12), skin, 0,1.86,0));
+for (const sx of [-0.55,0.55]) avatar.add(part(new THREE.SphereGeometry(0.28,12,10), skin, sx,1.78,0));
+// legs — fatigue pants + boots (pivot at hip so they swing)
+const legGeo = new THREE.CylinderGeometry(0.23,0.18,0.86,10);
+const avLegL = new THREE.Group(); avLegL.position.set(-0.25,0.92,0);
+avLegL.add(part(legGeo, fatigue, 0,-0.43,0));
+avLegL.add(part(new THREE.BoxGeometry(0.32,0.22,0.48), fatigueDk, 0,-0.86,-0.05));   // boot
 avatar.add(avLegL);
-const avLegR = avLegL.clone(); avLegR.position.x=0.17; avatar.add(avLegR);
-// left arm at side (swings); glove
-const armGeo = new THREE.CylinderGeometry(0.1,0.09,0.6,10);
-const avArmL = new THREE.Group(); avArmL.position.set(-0.42,1.76,0);
-avArmL.add(part(armGeo, suit, 0,-0.3,0));
-avArmL.add(part(new THREE.SphereGeometry(0.12,10,10), accent, 0,-0.62,0));        // glove
-avArmL.add(part(new THREE.BoxGeometry(0.16,0.1,0.14), panelGlow, 0,-0.46,-0.02)); // wrist console
+const avLegR = avLegL.clone(); avLegR.position.x=0.25; avatar.add(avLegR);
+// left arm (muscular, swings) + wristband + fist
+const armGeo = new THREE.CylinderGeometry(0.19,0.15,0.68,10);
+const avArmL = new THREE.Group(); avArmL.position.set(-0.6,1.76,0);
+avArmL.add(part(armGeo, skin, 0,-0.34,0));
+avArmL.add(part(new THREE.CylinderGeometry(0.17,0.17,0.09,10), band, 0,-0.56,0));    // wristband
+avArmL.add(part(new THREE.SphereGeometry(0.17,10,10), skin, 0,-0.68,0));             // fist
 avatar.add(avArmL);
-// right arm extended forward, gripping the blaster
-const avArmR = new THREE.Group(); avArmR.position.set(0.42,1.76,0);
-const armRm = part(armGeo, suit, 0,-0.16,-0.28); armRm.rotation.x=-1.35; avArmR.add(armRm);
+// right arm forward, gripping the rifle
+const avArmR = new THREE.Group(); avArmR.position.set(0.6,1.76,0);
+const armRm = part(armGeo, skin, 0,-0.16,-0.28); armRm.rotation.x=-1.35; avArmR.add(armRm);
 avatar.add(avArmR);
-// laser blaster
-const avGun = new THREE.Group(); avGun.position.set(0.42,1.5,-0.6);
-avGun.add(part(new THREE.BoxGeometry(0.15,0.18,0.5), avDark, 0,0,0));
-const gunEmit = part(new THREE.CylinderGeometry(0.05,0.09,0.2,12), laserGlow, 0,0,-0.33); gunEmit.rotation.x=Math.PI/2; avGun.add(gunEmit);
+// assault rifle
+const avGun = new THREE.Group(); avGun.position.set(0.4,1.5,-0.5);
+avGun.add(part(new THREE.BoxGeometry(0.12,0.16,0.72), gunMetal, 0,0,-0.1));          // receiver
+const avBarrel = part(new THREE.CylinderGeometry(0.035,0.035,0.5,10), gunMetal, 0,0.02,-0.55); avBarrel.rotation.x=Math.PI/2; avGun.add(avBarrel);
+avGun.add(part(new THREE.BoxGeometry(0.1,0.3,0.12), gunMetal, 0,-0.2,0.02));         // magazine
+avGun.add(part(new THREE.BoxGeometry(0.08,0.14,0.24), woodMat, 0,-0.01,0.24));       // stock
+const gunEmit = part(new THREE.CylinderGeometry(0.05,0.07,0.12,12), laserGlow, 0,0.02,-0.78); gunEmit.rotation.x=Math.PI/2; avGun.add(gunEmit);
 avatar.add(avGun);
-const avMuzzleTip = new THREE.Object3D(); avMuzzleTip.position.set(0.42,1.5,-0.98); avatar.add(avMuzzleTip);
+const avMuzzleTip = new THREE.Object3D(); avMuzzleTip.position.set(0.4,1.52,-1.0); avatar.add(avMuzzleTip);
 avatar.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
+avatar.scale.setScalar(1.12);                          // a bit bigger overall
+const procParts = [...avatar.children];                // procedural body (hidden once the real model loads)
 // echo protection shield bubble (shown while invulnerable from a deployed echo)
 const shield = new THREE.Mesh(new THREE.SphereGeometry(1.7,18,14),
   new THREE.MeshBasicMaterial({ color:0x6fe8ff, transparent:true, opacity:0,
     blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide }));
 shield.position.y = 1.1; shield.visible = false; avatar.add(shield);
 scene.add(avatar);
+
+// ---- load a real rigged + animated character (replaces the blocky body) ----
+let heroMixer = null, heroActions = {}, heroActive = '';
+let soldierGLTF = null;                                 // shared for enemy clones
+new GLTFLoader().load('Soldier.glb', (gltf)=>{
+  soldierGLTF = gltf;
+  const model = gltf.scene;
+  model.traverse(o=>{ if (o.isMesh){ o.castShadow = true; o.frustumCulled = false; } });
+  // scale to ~2 units tall and stand its feet on the avatar origin
+  let box = new THREE.Box3().setFromObject(model);
+  const sc = 2.0 / (box.max.y - box.min.y);
+  model.scale.setScalar(sc);
+  box = new THREE.Box3().setFromObject(model);
+  model.position.y = -box.min.y;
+  model.rotation.y = Math.PI;                          // face the aim direction (group -Z)
+  avatar.add(model);
+  for (const c of procParts){ if (c!==avGun && c!==avMuzzleTip) c.visible = false; }  // hide blocky body, keep the rifle
+  heroMixer = new THREE.AnimationMixer(model);
+  for (const clip of gltf.animations) heroActions[clip.name] = heroMixer.clipAction(clip);
+  (heroActions['Idle'] || Object.values(heroActions)[0])?.play();
+  heroActive = heroActions['Idle'] ? 'Idle' : '';
+}, undefined, (err)=>{ console.warn('hero model failed to load', err); });
 // world-space muzzle flash for the avatar's gun
 const tMuzzle = new THREE.PointLight(0xfff0c0, 0, 11, 2); scene.add(tMuzzle);
 const tFlash = new THREE.Mesh(new THREE.SphereGeometry(0.26,8,8),
@@ -985,7 +1083,7 @@ function ouch(){
 }
 
 const sfx = {
-  shoot(){ tone(1350,0.13,0.16,'square',230); tone(950,0.1,0.07,'sawtooth',170); noise(0.04,3200,1,0.05); },  // laser pew
+  shoot(){ gunshot(false); },                  // machine-gun report
   launch(){ gunshot(true); },                  // realistic heavy bazooka report
   hit(){ bubblePop(); },                        // bubble pop on hitting an enemy
   kill(){ noise(0.3, 600, 0.6, 0.4, 'lowpass'); tone(160, 0.3, 0.25, 'sawtooth', 40); },
@@ -1193,8 +1291,8 @@ const fMat = new THREE.MeshBasicMaterial({ color: 0xcfeaff });
 const eMat = new THREE.MeshBasicMaterial({ color: 0xff5a5a });
 const trailGeo = new THREE.CylinderGeometry(0.05, 0.05, 1, 6);
 // player's laser bolt — an elongated glowing beam segment (length along -Z)
-const laserGeo = new THREE.BoxGeometry(0.09, 0.09, 1.6);
-const laserMat = new THREE.MeshBasicMaterial({ color: 0x50f0ff, transparent:true, opacity:0.95,
+const laserGeo = new THREE.BoxGeometry(0.06, 0.06, 0.9);          // tracer round
+const laserMat = new THREE.MeshBasicMaterial({ color: 0xffd24a, transparent:true, opacity:0.95,
   blending: THREE.AdditiveBlending });
 const sparkGeo = new THREE.SphereGeometry(0.1, 6, 6);
 const pickGeo = new THREE.OctahedronGeometry(0.5, 0);
@@ -1225,69 +1323,53 @@ function makeTopper(acc){
   } else return null;
   return g;
 }
-const fangMat = new THREE.MeshBasicMaterial({ color: 0xe6ddca });
-const mawMat  = new THREE.MeshBasicMaterial({ color: 0x140707 });
-// menacing original monster — hunched, horned, fanged, glowing eyes. Faces -Z.
-function makeGhost(color, s, acc, eyeColor=0xff3020){
+const cSkin = toon(0xc98b5e), cBoot = toon(0x15140f), cGun = toon(0x1c1c1c), cVest = toon(0x23251a);
+// enemy SOLDIER — a human commando (uniform = `color`, beret/helmet = `accent`). Faces -Z.
+// enemy from the real rigged model (cloned, tinted per squad, animated)
+function makeSoldierModel(color, s){
   const g = new THREE.Group();
-  const bodyMat = toon(color, color, 0.25);
-  const clawMat = toon(0x14151b);
-  const eyeMat  = new THREE.MeshBasicMaterial({ color: eyeColor });
-  // hunched torso
-  const torso = new THREE.Mesh(new THREE.SphereGeometry(1.0, 18, 16), bodyMat);
-  torso.scale.set(1.15, 1.1, 1.0); torso.position.set(0, -0.1, 0.1); outline(torso, 1.05); g.add(torso);
-  // hunched shoulders
-  for (const sx of [-0.8, 0.8]){
-    const sh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 14, 12), bodyMat);
-    sh.position.set(sx, 0.55, 0.15); outline(sh, 1.06); g.add(sh);
+  const model = cloneSkeleton(soldierGLTF.scene);
+  let box = new THREE.Box3().setFromObject(model);
+  model.scale.setScalar(1.9/(box.max.y-box.min.y));
+  box = new THREE.Box3().setFromObject(model);
+  model.position.y = -1.08 - box.min.y;                 // feet land where the procedural body's did
+  model.rotation.y = Math.PI;
+  let bodyMat = null;
+  model.traverse(o=>{ if (o.isMesh){ o.castShadow=true; o.frustumCulled=false;
+    o.material = o.material.clone(); o.material.color = new THREE.Color(color); if (!bodyMat) bodyMat=o.material; } });
+  g.add(model); g.scale.setScalar(s);
+  const mixer = new THREE.AnimationMixer(model);
+  const clip = soldierGLTF.animations.find(c=>c.name==='Run') || soldierGLTF.animations[0];
+  const act = mixer.clipAction(clip); act.play(); act.time = Math.random()*(clip.duration||1);
+  return { group:g, bodyMat: bodyMat || toon(color), color, mixer };
+}
+function makeGhost(color, s, acc, accent=0x6a1414){
+  if (soldierGLTF) return makeSoldierModel(color, s);    // real model once it's loaded
+  const g = new THREE.Group();
+  const bodyMat = toon(color);
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.72,0.85,0.42), bodyMat); outline(torso,1.05); g.add(torso);
+  const vest  = new THREE.Mesh(new THREE.BoxGeometry(0.76,0.6,0.46), cVest); g.add(vest);
+  const belt  = new THREE.Mesh(new THREE.BoxGeometry(0.76,0.12,0.48), cBoot); belt.position.y=-0.46; g.add(belt);
+  // head + helmet/beret + visor band
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.23,14,12), cSkin); head.position.y=0.72; outline(head,1.06); g.add(head);
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.28,14,12,0,Math.PI*2,0,Math.PI*0.6), toon(accent)); helmet.position.y=0.78; g.add(helmet);
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.07,0.04), toon(0x111111)); visor.position.set(0,0.72,-0.21); g.add(visor);
+  // shoulders
+  for (const sx of [-0.4,0.4]){ const sh=new THREE.Mesh(new THREE.SphereGeometry(0.16,10,8), bodyMat); sh.position.set(sx,0.4,0); g.add(sh); }
+  // arms forward holding a rifle
+  for (const sx of [-0.32,0.32]){ const arm=new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.09,0.58,8), bodyMat); arm.position.set(sx,0.16,-0.2); arm.rotation.x=-1.2; g.add(arm); }
+  const rifle=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.13,0.58), cGun); rifle.position.set(0.13,0.22,-0.5); g.add(rifle);
+  const rb=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,0.32,8), cGun); rb.rotation.x=Math.PI/2; rb.position.set(0.13,0.24,-0.78); g.add(rb);
+  const mag=new THREE.Mesh(new THREE.BoxGeometry(0.08,0.2,0.1), cGun); mag.position.set(0.13,0.08,-0.42); g.add(mag);
+  // legs + boots
+  for (const sx of [-0.17,0.17]){
+    const leg=new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.13,0.85,8), bodyMat); leg.position.set(sx,-0.5,0); g.add(leg);
+    const boot=new THREE.Mesh(new THREE.BoxGeometry(0.24,0.2,0.4), cBoot); boot.position.set(sx,-0.98,-0.05); g.add(boot);
   }
-  // head thrust forward + down
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.62, 16, 14), bodyMat);
-  head.position.set(0, 0.45, -0.7); head.scale.set(1, 0.9, 1.1); outline(head, 1.06); g.add(head);
-  // angry brow
-  const brow = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.16, 0.2), clawMat);
-  brow.position.set(0, 0.62, -1.04); brow.rotation.x = 0.3; g.add(brow);
-  // glowing slit eyes
-  for (const sx of [-0.22, 0.22]){
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), eyeMat);
-    eye.position.set(sx, 0.46, -1.12); eye.scale.set(1.4, 0.6, 0.6); g.add(eye);
-  }
-  // gaping maw + two rows of fangs
-  const maw = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 10), mawMat);
-  maw.position.set(0, 0.18, -1.04); maw.scale.set(1.15, 0.85, 0.7); g.add(maw);
-  for (let i=0;i<5;i++){
-    const x = -0.18 + i*0.09;
-    const f1 = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.18, 6), fangMat); f1.position.set(x, 0.27, -1.18); f1.rotation.x = Math.PI; g.add(f1);
-    const f2 = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.16, 6), fangMat); f2.position.set(x+0.04, 0.07, -1.18); g.add(f2);
-  }
-  // curved horns
-  for (const sx of [-0.32, 0.32]){
-    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.62, 8), clawMat);
-    horn.position.set(sx, 0.95, -0.5); horn.rotation.set(-0.5, 0, sx>0?0.35:-0.35); outline(horn, 1.08); g.add(horn);
-  }
-  // jagged back spikes
-  for (let i=0;i<4;i++){
-    const sp = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.45 - i*0.06, 6), clawMat);
-    sp.position.set(0, 0.45 - i*0.26, 0.55 + i*0.12); sp.rotation.x = -0.5; g.add(sp);
-  }
-  // arms ending in claws
-  for (const sx of [-1.0, 1.0]){
-    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.95, 10), bodyMat);
-    arm.position.set(sx, -0.25, -0.15); arm.rotation.z = sx>0?0.35:-0.35; arm.rotation.x = -0.35; outline(arm, 1.06); g.add(arm);
-    for (let c=0;c<3;c++){
-      const claw = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.3, 6), clawMat);
-      claw.position.set(sx*1.04 + (c-1)*0.13, -0.78, -0.5); claw.rotation.x = -1.6; g.add(claw);
-    }
-  }
-  // clawed feet
-  for (const sx of [-0.4, 0.4]){
-    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 10), bodyMat);
-    foot.position.set(sx, -1.12, -0.2); foot.scale.set(1, 0.6, 1.5); g.add(foot);
-    for (let c=0;c<3;c++){ const cl=new THREE.Mesh(new THREE.ConeGeometry(0.05,0.18,6), clawMat); cl.position.set(sx+(c-1)*0.12,-1.16,-0.52); cl.rotation.x=-1.7; g.add(cl); }
-  }
-  // boss: a jagged crown of extra horns
+  // the WARLORD (boss): a beret + gold shoulder rank (size also bumped by scale)
   if (acc==='crown'){
-    for (let i=0;i<7;i++){ const a=i/7*Math.PI*2; const pk=new THREE.Mesh(new THREE.ConeGeometry(0.12,0.55,6), clawMat); pk.position.set(Math.cos(a)*0.5,1.0,Math.sin(a)*0.5-0.15); pk.rotation.x=-0.3; g.add(pk); }
+    const beret=new THREE.Mesh(new THREE.CylinderGeometry(0.34,0.31,0.16,12), toon(0x7a1414)); beret.position.set(0,0.9,0.03); beret.rotation.z=0.25; g.add(beret);
+    for (const sx of [-0.44,0.44]) { const rank=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.06,0.18), toon(0xc8a23a)); rank.position.set(sx,0.48,0); g.add(rank); }
   }
   g.traverse(o=>{ if (o.isMesh) o.castShadow = true; });
   g.scale.setScalar(s);
@@ -1295,16 +1377,17 @@ function makeGhost(color, s, acc, eyeColor=0xff3020){
 }
 
 // ---- original menacing cast (edit names/colors/eyes/taunts freely) ----
+// enemy soldier squad — color = uniform, eyes = beret/helmet accent
 const CHARACTERS = [
-  { name:"GRAVEMAW",  color:0x6e2a2a, eyes:0xff3020, acc:'none', taunt:"You shouldn't have come here." },
-  { name:"HOLLOW",    color:0x2c3a30, eyes:0x9bff3a, acc:'none', taunt:"I can smell your fear." },
-  { name:"WRAITHE",   color:0x382a52, eyes:0xb060ff, acc:'none', taunt:"This is where you end." },
-  { name:"ASHEN",     color:0x3a3a42, eyes:0xffce3a, acc:'none', taunt:"Run. It won't matter." },
-  { name:"ROTGRUB",   color:0x49391e, eyes:0x8aff5a, acc:'none', taunt:"Your bones are mine." },
-  { name:"CRIMSON",   color:0x5a1e22, eyes:0xff5040, acc:'none', taunt:"No one leaves the maze." },
+  { name:"RECON",   color:0x44502c, eyes:0x2c2c2c, acc:'none', taunt:"Target spotted." },        // olive drab
+  { name:"RAPTOR",  color:0x6a5e3a, eyes:0x3a2a16, acc:'none', taunt:"Moving in!" },              // tan
+  { name:"VIPER",   color:0x3a423a, eyes:0x202820, acc:'none', taunt:"You're surrounded." },      // field grey
+  { name:"BRAVO",   color:0x4e4632, eyes:0x6a1414, acc:'none', taunt:"Light him up!" },            // khaki, red beret
+  { name:"GHOST-9", color:0x33382c, eyes:0x101010, acc:'none', taunt:"No way out, soldier." },     // dark green
+  { name:"DELTA",   color:0x5a5240, eyes:0x2a2a2a, acc:'none', taunt:"Take the shot!" },           // sand
 ];
-const CHARGER_CHAR = { name:"SKITTER", color:0x701818, eyes:0xff2020, acc:'none', taunt:"Too slow to survive." };
-const BOSS_CHAR    = { name:"THE DEVOURER", color:0x3a1438, eyes:0xff3060, acc:'crown', taunt:"I will devour you whole." };
+const CHARGER_CHAR = { name:"RUSHER",     color:0x4a3a26, eyes:0x6a1414, acc:'none',  taunt:"Flanking!" };
+const BOSS_CHAR    = { name:"THE WARLORD", color:0x2e3826, eyes:0x6a1414, acc:'crown', taunt:"I run this jungle." };
 
 const uiEl = document.getElementById('ui');
 function makeLabel(char){
@@ -1324,13 +1407,13 @@ function spawnWave() {
     const char = charger ? CHARGER_CHAR : CHARACTERS[Math.floor(Math.random()*CHARACTERS.length)];
     const gh = makeGhost(char.color, charger?0.85:1.05, char.acc, char.eyes);
     const cp = farOpenCell(26);
-    gh.group.position.set(cp.x, charger?1.3:1.45, cp.z);
+    gh.group.position.set(cp.x, charger?0.95:1.15, cp.z);
     scene.add(gh.group);
     spawnRing(new THREE.Vector3(cp.x, 0.05, cp.z), char.color, 4, true, 0.7);
-    enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, col: char.color, char, label: makeLabel(char),
+    enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, mixer: gh.mixer, col: char.color, char, label: makeLabel(char),
       spotted:false, tauntT:0,
       hp: charger?1:2, maxhp: charger?1:2, speed: (charger?7:3.2)*sc, charger, ghost:true,
-      rad: charger?1.0:1.3, baseY: charger?1.3:1.45, phase: Math.random()*6.28,
+      rad: charger?1.0:1.3, baseY: charger?0.95:1.15, phase: Math.random()*6.28,
       hit:0, fireCd: charger?0:1.5+Math.random()*2, stepCd: Math.random()*0.4 });
   }
   if (wave % 3 === 0) spawnBoss();          // a mini-boss every 3rd wave
@@ -1341,15 +1424,15 @@ function spawnFinalBoss(){
   const char = BOSS_CHAR;
   const gh = makeGhost(char.color, 1.7, char.acc, char.eyes);   // fits the maze corridors
   const cp = farOpenCell(30);
-  gh.group.position.set(cp.x, 1.7, cp.z);
+  gh.group.position.set(cp.x, 1.8, cp.z);
   scene.add(gh.group);
-  announce('☠  THE DEVOURER  ☠');
+  announce('☠  THE WARLORD  ☠');
   spawnRing(new THREE.Vector3(cp.x, 0.05, cp.z), char.color, 12, true, 1.2);
   shake=Math.max(shake,1.0); flashScreen(0.4,'255,60,90');
   enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, col: char.color, char, label: makeLabel(char),
     spotted:false, tauntT:0,
     hp:14, maxhp:14, speed:3.6, charger:false, boss:true, final:true, ghost:true,
-    rad:1.5, baseY:1.7, phase:0, hit:0, fireCd:1.2, stepCd:0.3,
+    rad:1.5, baseY:1.8, phase:0, hit:0, fireCd:1.2, stepCd:0.3,
     beamPhase:'idle', beamCd:3.5, beamTimer:0, beamAngle:0 });
 }
 
@@ -1373,7 +1456,7 @@ function makeBullet(pos, dir, speed, friendly) {
   m.position.copy(pos);
   // tracer trail child
   const trail = new THREE.Mesh(trailGeo, new THREE.MeshBasicMaterial({
-    color: friendly?0x50f0ff:0xff6060, transparent:true, opacity:0.5 }));
+    color: friendly?0xffd24a:0xff6060, transparent:true, opacity:0.5 }));
   trail.rotation.x = Math.PI/2; trail.position.z = 0.5; trail.scale.y = 0;
   m.add(trail);
   scene.add(m);
@@ -1399,7 +1482,7 @@ function shoot() {
   if (fireCd > 0) return;                         // fire-rate limit
   if (player.ammo <= 0){ fireCd = 0.5; sfx.empty(); return; }   // out of ammo: click
   player.ammo--;
-  fireCd = hasBazooka ? 0.55 : 0.11;              // bazooka slower than pistol
+  fireCd = hasBazooka ? 0.55 : 0.08;              // fast full-auto fire
   const dir = aimDir.clone();                     // fire toward the mouse aim
   const muzzlePos = avMuzzleTip.getWorldPosition(new THREE.Vector3());
   tMuzzle.position.copy(muzzlePos); tFlash.position.copy(muzzlePos);
@@ -1414,13 +1497,13 @@ function shoot() {
     return;
   }
 
-  makeBullet(muzzlePos, dir, 90, true);          // laser bolt — fast
+  makeBullet(muzzlePos, dir, 95, true);          // tracer round
   const b = bullets[bullets.length-1];
   b.mesh.lookAt(muzzlePos.clone().add(dir));
-  kick(0.04); shake = Math.max(shake, 0.1); aberrate(0.0012);
-  tMuzzle.color.set(0x60f0ff); tFlash.material.color.set(0x9ff8ff);
+  kick(0.045); shake = Math.max(shake, 0.1); aberrate(0.0012);
+  tMuzzle.color.set(0xffe2a0); tFlash.material.color.set(0xffe9b0);
   tMuzzle.intensity = 7; tFlash.material.opacity = 1; tFlash.scale.setScalar(1+Math.random());
-  spawnRing(muzzlePos, 0x50f0ff, 1.0, false, 0.22);
+  spawnRing(muzzlePos, 0xffd24a, 0.9, false, 0.2);
   sfx.shoot();
 }
 function enemyShoot(e) {
@@ -1562,16 +1645,16 @@ musicBtn.addEventListener('click', e=>{ e.stopPropagation(); toggleMute(); });
 applyMute();   // reflect the saved preference
 
 // aim from a VIRTUAL cursor driven by locked-mouse movement, clamped to the window
-let vmx = innerWidth/2, vmy = innerHeight/2;
+let vmx = CW/2, vmy = CH/2;
 function setAimFromVirtual(){
-  vmx = Math.max(0, Math.min(innerWidth, vmx));
-  vmy = Math.max(0, Math.min(innerHeight, vmy));
-  mouseNDC.x = (vmx/innerWidth)*2 - 1;
-  mouseNDC.y = -(vmy/innerHeight)*2 + 1;
+  vmx = Math.max(0, Math.min(CW, vmx));        // clamp to the portrait canvas
+  vmy = Math.max(0, Math.min(CH, vmy));
+  mouseNDC.x = (vmx/CW)*2 - 1;
+  mouseNDC.y = -(vmy/CH)*2 + 1;
 }
 addEventListener('mousemove', e=>{
   if (document.pointerLockElement === renderer.domElement){ vmx += e.movementX; vmy += e.movementY; }
-  else { vmx = e.clientX; vmy = e.clientY; }
+  else { vmx = e.clientX - CL; vmy = e.clientY - CT; }   // canvas-relative
   setAimFromVirtual();
 });
 // left-click to fire (the start/resume click lands on the overlay, before `started`)
@@ -1727,11 +1810,21 @@ function update(dt){
   PP.set(player.pos.x, 1.4, player.pos.z);   // player point for targeting
   updateAim();                                // mouse -> ground -> aim direction
   // place + orient the avatar, and animate the walk
-  if (moveIntent) walkPhase += dt*11;
-  const sw = moveIntent ? Math.sin(walkPhase)*0.6 : 0;
-  avLegL.rotation.x = sw;  avLegR.rotation.x = -sw;
-  avArmL.rotation.x = -sw*0.7;
-  const bobY = moveIntent ? Math.abs(Math.sin(walkPhase))*0.07 : 0;
+  if (heroMixer){
+    heroMixer.update(dt);                               // drive the rigged model's animation
+    const want = moveIntent ? 'Run' : 'Idle';
+    if (heroActions[want] && heroActive !== want){
+      heroActions[want].reset().fadeIn(0.2).play();
+      if (heroActions[heroActive]) heroActions[heroActive].fadeOut(0.2);
+      heroActive = want;
+    }
+  } else {                                              // procedural fallback (before the model loads)
+    if (moveIntent) walkPhase += dt*11;
+    const sw = moveIntent ? Math.sin(walkPhase)*0.6 : 0;
+    avLegL.rotation.x = sw;  avLegR.rotation.x = -sw;
+    avArmL.rotation.x = -sw*0.7;
+  }
+  const bobY = (moveIntent && !heroMixer) ? Math.abs(Math.sin(walkPhase))*0.07 : 0;
   avatar.position.set(player.pos.x, bobY, player.pos.z);
   avatar.rotation.y = Math.atan2(-aimDir.x, -aimDir.z);
   // echo shield bubble
@@ -1844,10 +1937,11 @@ function update(dt){
     }
     const spd = e.speed * (frightened>0 ? 0.5 : 1);   // power pellet slows ghosts
     e.mesh.position.addScaledVector(steer, spd*wdt);
-    resolveCircle(e.mesh.position, e.rad*0.8);         // ghosts blocked by maze walls
-    // face the player + float-bob through the corridors
+    resolveCircle(e.mesh.position, e.rad*0.8);         // soldiers blocked by maze walls
+    if (e.mixer) e.mixer.update(dt);                    // animate the rigged model
+    // face the player + slight bob through the corridors
     e.mesh.rotation.y = Math.atan2(PP.x - e.mesh.position.x, PP.z - e.mesh.position.z);
-    e.mesh.position.y = e.baseY + Math.sin(performance.now()*0.004*Math.max(T,0.15) + e.phase)*0.08;
+    e.mesh.position.y = e.baseY + Math.sin(performance.now()*0.004*Math.max(T,0.15) + e.phase)*(e.mixer?0.03:0.08);
     // colour: frightened blue, else its own hue; flash white on hit
     e.bodyMat.emissiveIntensity = e.hit>0 ? 3.5 : 0.45;
     e.bodyMat.color.set(e.hit>0 ? 0xffffff : (frightened>0 ? 0x2233dd : e.col));
@@ -1994,9 +2088,10 @@ function update(dt){
     }
   }
 
-  // red brick — hit flash + idle pulse
+  // monolith — energy pulse + hit flash, slowly turning rune orb
   if (brick){
-    brick.mesh.material.emissiveIntensity = brick.hit>0 ? 3 : 0.8 + Math.sin(performance.now()*0.004)*0.25;
+    brick.core.opacity = brick.hit>0 ? 1 : 0.55 + Math.sin(performance.now()*0.004)*0.3;
+    if (brick.mesh.userData.orb) brick.mesh.userData.orb.rotation.y += dt*1.2;
     if (brick.hit>0) brick.hit-=dt;
   }
   // portal — animate + detect the player stepping in
@@ -2088,19 +2183,20 @@ function damageBrick(pos){
   if (!brick) return;
   brick.hp--; brick.hit=0.14;
   hitMark(); sfx.hit(); shake=Math.max(shake,0.3);
-  shatter(pos.clone(), 0xff4040, 7, 9);
-  spawnRing(pos.clone(), 0xff5050, 2.0, false, 0.3); aberrate(0.003);
-  announce(brick.hp>0 ? `BRICK  ${brick.hp}/5` : '');
+  shatter(pos.clone(), 0x9a9078, 7, 9);                 // stone chips
+  spawnRing(pos.clone(), 0x6fe8d8, 2.0, false, 0.3); aberrate(0.003);
+  announce(brick.hp>0 ? `MONOLITH  ${brick.hp}/5` : '');
   if (brick.hp<=0) destroyBrick();
 }
 function destroyBrick(){
   if (!brick) return;
   const m = brick.mesh, p = m.position.clone();
-  shatter(p, 0xff3030, 44, 15);
-  spawnRing(p, 0xff4040, 9, false, 0.8);
-  spawnRing(new THREE.Vector3(0,0.05,0), 0xff5050, 13, true, 1.0);
+  shatter(p, 0x9a9078, 40, 15);                          // stone rubble
+  shatter(p, 0x46e6c8, 16, 13);                          // energy burst
+  spawnRing(p, 0x6fe8d8, 9, false, 0.8);
+  spawnRing(new THREE.Vector3(0,0.05,0), 0x6fe8d8, 13, true, 1.0);
   shake=Math.max(shake,1.3); hitStop=Math.max(hitStop,0.1); aberrate(0.014); sfx.kill();
-  flashScreen(0.45,'255,90,90');
+  flashScreen(0.45,'120,240,210');
   scene.remove(m); if (m.userData.trim) scene.remove(m.userData.trim);
   const idx = obstacles.indexOf(brickObstacle); if (idx>=0) obstacles.splice(idx,1);
   brick = null;
@@ -2108,24 +2204,29 @@ function destroyBrick(){
 }
 function openPortal(){
   const g = new THREE.Group();
+  // carved stone gate-ring set into the floor
+  const stoneRing = new THREE.Mesh(new THREE.TorusGeometry(3.4, 0.6, 10, 40),
+    new THREE.MeshStandardMaterial({ color:0x847c68, map:STONE_WALL, roughness:0.95 }));
+  stoneRing.rotation.x=-Math.PI/2; stoneRing.position.y=0.3; g.add(stoneRing);
+  // glowing energy pool + rune ring
   const disc = new THREE.Mesh(new THREE.CircleGeometry(3, 44),
-    new THREE.MeshBasicMaterial({ color:0x40c8ff, transparent:true, opacity:0.65,
+    new THREE.MeshBasicMaterial({ color:ENERGY, transparent:true, opacity:0.6,
       side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false }));
   disc.rotation.x=-Math.PI/2; disc.position.y=0.06; g.add(disc);
-  const ring = new THREE.Mesh(new THREE.RingGeometry(2.9, 3.5, 44),
-    new THREE.MeshBasicMaterial({ color:0xbfe6ff, transparent:true,
+  const ring = new THREE.Mesh(new THREE.RingGeometry(2.7, 3.1, 44),
+    new THREE.MeshBasicMaterial({ color:0xbfffe6, transparent:true,
       side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false }));
-  ring.rotation.x=-Math.PI/2; ring.position.y=0.08; g.add(ring);
-  const beam = new THREE.Mesh(new THREE.CylinderGeometry(2.7, 2.7, 34, 32, 1, true),
-    new THREE.MeshBasicMaterial({ color:0x40c8ff, transparent:true, opacity:0.13,
+  ring.rotation.x=-Math.PI/2; ring.position.y=0.09; g.add(ring);
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.5, 34, 32, 1, true),
+    new THREE.MeshBasicMaterial({ color:ENERGY, transparent:true, opacity:0.12,
       side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false }));
   beam.position.y=17; g.add(beam);
-  const pl = new THREE.PointLight(0x66c8ff, 4, 50); pl.position.y=3; g.add(pl);
+  const pl = new THREE.PointLight(0x66ffd8, 4, 50); pl.position.y=3; g.add(pl);
   scene.add(g);
   portal = { group:g, disc, ring, beam, t:0 };
   portalActive = true;
-  flashScreen(0.15,'255,212,120');
-  announce('PATH OPENED — STEP IN');
+  flashScreen(0.15,'120,240,210');
+  announce('GATE OPENED — STEP IN');
 }
 function enterNextLevel(){
   if (level!==1) return;
@@ -2222,7 +2323,7 @@ function win(){
   setTimeout(()=>{
     overlay.classList.remove('hidden'); overlay.style.cursor='default';
     overlay.querySelector('div').innerHTML=
-      `<h1 style="color:#ffe07a">YOU WIN</h1><p>THE DEVOURER has fallen.<br>`+
+      `<h1 style="color:#ffe07a">YOU WIN</h1><p>THE WARLORD has fallen.<br>`+
       `<span style="color:#7fffd0">+${VICTORY_BONUS} victory bonus</span><br>`+
       `final score · <span style="color:#ffd479">${score}</span>`+
       `${isBest?'  <span style="color:#7fffd0">★ NEW BEST ★</span>':''}<br><br>`+
