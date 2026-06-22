@@ -439,6 +439,7 @@ let finalFight=false, won=false;
 let combo=0, comboT=0, heartT=0;
 const pellets = [];                 // (legacy, unused) maze dots
 const ammoBoxes = [];               // hidden ammo crates (+30 each)
+const barrels = [];                 // explosive barrels
 let mazeSpawn = new THREE.Vector3(0,1.7,0);
 const crateMat = toon(0xe8a23c);    // wooden-crate orange
 const crateDark = toon(0xc8842a);
@@ -636,6 +637,29 @@ function propColumn(){
     p.rotation.y += Math.random()*6.28;
     p.traverse(o=>{ if (o.isMesh) o.castShadow=true; });
     scene.add(p); placed++;
+  }
+}
+
+// ---------- explosive barrels ----------
+const barrelMat = toon(0xb33524, 0x551007, 0.35), barrelBand = toon(0x2a1410), barrelHaz = new THREE.MeshBasicMaterial({color:0xffd23a});
+function spawnBarrel(x,z){
+  const g = new THREE.Group(); g.position.set(x,0,z);
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.5,1.4,14), barrelMat); body.position.y=0.7; body.castShadow=true; outline(body,1.05); g.add(body);
+  for (const by of [0.45,0.95]){ const ring=new THREE.Mesh(new THREE.CylinderGeometry(0.53,0.53,0.12,14), barrelBand); ring.position.y=by; g.add(ring); }
+  const haz=new THREE.Mesh(new THREE.BoxGeometry(0.45,0.45,0.06), hazardMat); haz.position.set(0,0.72,-0.5); g.add(haz);
+  scene.add(g);
+  barrels.push({ group:g, x, z, dead:false });
+}
+{
+  const cells = openCells.slice();
+  for (let i=cells.length-1;i>0;i--){ const j=Math.random()*(i+1)|0; [cells[i],cells[j]]=[cells[j],cells[i]]; }
+  let n=0;
+  for (const c of cells){
+    if (n>=11) break;
+    const cp=cellPos(c.r,c.c);
+    if (Math.hypot(cp.x-mazeSpawn.x, cp.z-mazeSpawn.z) < 12) continue;
+    if (Math.hypot(cp.x, cp.z) < 11) continue;
+    spawnBarrel(cp.x+(Math.random()-0.5)*1.5, cp.z+(Math.random()-0.5)*1.5); n++;
   }
 }
 
@@ -1200,7 +1224,7 @@ function stopMenuMusic(){
 // ====================================================================
 const player = { pos: mazeSpawn.clone(), yaw:0, pitch:0,
   hp:3, maxhp:3, invuln:0, ammo:30, maxAmmo:99, dashCd:0 };
-const bullets = [], enemies = [], sparks = [], pickups = [];
+const bullets = [], enemies = [], sparks = [], pickups = [], dying = [];
 const rings = [], debris = [], casings = [];   // VFX pools
 
 // ---------- VFX: ejected shell casings ----------
@@ -1506,15 +1530,21 @@ function shoot() {
   spawnRing(muzzlePos, 0xffd24a, 0.9, false, 0.2);
   sfx.shoot();
 }
+function enemyMuzzle(e, dir){
+  const mz = e.mesh.position.clone().addScaledVector(dir, 1.0); mz.y = e.baseY + 0.35;
+  spawnRing(mz, 0xffd24a, 0.7, false, 0.16); spark(mz, 0xffe2a0, 4, 6);
+}
 function enemyShoot(e) {
   const dir = new THREE.Vector3().subVectors(PP, e.mesh.position).normalize();
   makeBullet(e.mesh.position.clone(), dir, 24, false);
   const b = bullets[bullets.length-1];
   b.mesh.lookAt(e.mesh.position.clone().add(dir));
+  enemyMuzzle(e, dir);
 }
 const UP = new THREE.Vector3(0,1,0);
 function bossShoot(e) {                       // 3-bullet spread
   const base = new THREE.Vector3().subVectors(PP, e.mesh.position).normalize();
+  enemyMuzzle(e, base);
   for (const off of [-0.2, 0, 0.2]){
     const dir = base.clone().applyAxisAngle(UP, off);
     makeBullet(e.mesh.position.clone(), dir, 26, false);
@@ -1889,6 +1919,12 @@ function update(dt){
       else if (!b.rocket){ spark(b.mesh.position, b.friendly?0x9fd8ff:0xff8080, 7, 7);
              spawnRing(b.mesh.position.clone(), b.friendly?0x9fd8ff:0xff8080, 1.1, false, 0.25); }
     }
+    // shoot a barrel -> it detonates
+    if (b.life>0){
+      for (const bar of barrels){
+        if (!bar.dead && Math.hypot(b.mesh.position.x-bar.x, b.mesh.position.z-bar.z) < 0.9){ explodeBarrel(bar); b.life=0; break; }
+      }
+    }
     // tracer stretches with flow, contracts when frozen
     const len = b.vel.length()*wdt*1.2;
     b.trail.scale.y = Math.min(len, 8);
@@ -1992,6 +2028,15 @@ function update(dt){
     heartT -= dt;
     if (heartT <= 0){ const f = 1 - nearestEnemy/30; heartbeat(0.07 + f*0.18); heartT = 0.8 - f*0.5; }
   } else heartT = 0;
+
+  // dying soldiers — topple over and fade out
+  for (let i=dying.length-1;i>=0;i--){
+    const d=dying[i]; d.t+=dt;
+    d.mesh.rotation.z = d.dir * Math.min(d.t*3.2, Math.PI/2);
+    if (d.t>0.55){ const o=Math.max(0,1-(d.t-0.55)/0.6);
+      d.mesh.traverse(m=>{ if (m.isMesh && m.material) m.material.opacity=o; }); }
+    if (d.t>1.25){ scene.remove(d.mesh); dying.splice(i,1); }
+  }
 
   // sparks
   for (let i=sparks.length-1;i>=0;i--){
@@ -2140,9 +2185,10 @@ function killEnemy(e){
   combo++; comboT = 3.2;                              // keep the chain alive
   const mult = 1 + Math.floor(combo/5)*0.5;           // x1.5 @5, x2 @10, x2.5 @15...
   score += Math.round((boss?100:(e.charger?25:15)) * mult);
+  const model = !!e.mixer;
   const col = boss?0x3a7bff:(e.charger?0xff5050:0xff9030);
-  spark(e.mesh.position, col, boss?44:18, boss?18:12);
-  shatter(e.mesh.position.clone(), col, boss?34:(e.charger?12:18));     // geometric break-apart
+  spark(e.mesh.position, model?0xc0402a:col, boss?44:18, boss?18:12);
+  if (!model) shatter(e.mesh.position.clone(), col, boss?34:(e.charger?12:18));   // shards only for blocky fallback
   spawnRing(e.mesh.position.clone(), col, boss?8:3.5, false, boss?0.8:0.45);
   spawnRing(new THREE.Vector3(e.mesh.position.x, 0.05, e.mesh.position.z), col, boss?11:5, true, boss?0.9:0.6);
   shake=Math.max(shake, boss?1.1:0.45); hitStop=Math.max(hitStop, boss?0.1:0.05);
@@ -2155,7 +2201,14 @@ function killEnemy(e){
     scene.add(m); pickups.push({ mesh:m, life:18, spin:0 });
   }
   if (e.label) e.label.remove();
-  scene.remove(e.mesh); enemies.splice(enemies.indexOf(e),1);
+  enemies.splice(enemies.indexOf(e),1);
+  if (model && !e.final){                          // soldier topples over + fades
+    if (e.mixer) e.mixer.stopAllAction();
+    e.mesh.traverse(o=>{ if (o.isMesh && o.material){ o.material.transparent = true; } });
+    dying.push({ mesh:e.mesh, t:0, dir: Math.random()<0.5?1:-1 });
+  } else {
+    scene.remove(e.mesh);
+  }
   if (e.final) win();
 }
 
@@ -2279,8 +2332,26 @@ function explodeRocket(pos){
     const cx=(o.minx+o.maxx)/2, cz=(o.minz+o.maxz)/2;
     if (Math.hypot(cx-pos.x, cz-pos.z) < R) damageWall(o, 3);
   }
+  for (const bar of barrels){ if (!bar.dead && Math.hypot(bar.x-pos.x, bar.z-pos.z) < R) setTimeout(()=>explodeBarrel(bar), 60); }
   // splash hurts you if you fire point-blank
   if (pos.distanceTo(PP) < R*0.5) hurtPlayer();
+}
+function explodeBarrel(bar){
+  if (bar.dead) return; bar.dead = true;
+  const R = 6, p = new THREE.Vector3(bar.x, 0.8, bar.z);
+  spawnRing(p.clone(), 0xffae40, R, false, 0.5);
+  spawnRing(new THREE.Vector3(bar.x,0.08,bar.z), 0xffcf80, R*1.3, true, 0.6);
+  shatter(p.clone(), 0xffae40, 24, 14); spark(p.clone(), 0xffd070, 28, 16);
+  shake=Math.max(shake,0.9); hitStop=Math.max(hitStop,0.05); aberrate(0.012);
+  flashScreen(0.3,'255,150,60'); sfx.kill();
+  const fl=new THREE.PointLight(0xffb060,10,R*4); fl.position.copy(p); scene.add(fl); setTimeout(()=>scene.remove(fl),150);
+  for (let j=enemies.length-1;j>=0;j--){ const e=enemies[j]; if (e.hp<=0) continue;
+    if (e.mesh.position.distanceTo(p) < R+e.rad){ e.hp-=3; e.hit=0.14; if (e.hp<=0) killEnemy(e); } }
+  for (let k=obstacles.length-1;k>=0;k--){ const o=obstacles[k]; if (!o.destructible) continue;
+    const cx=(o.minx+o.maxx)/2, cz=(o.minz+o.maxz)/2; if (Math.hypot(cx-bar.x,cz-bar.z) < R) damageWall(o,3); }
+  if (p.distanceTo(PP) < R*0.65) hurtPlayer();
+  scene.remove(bar.group);
+  for (const other of barrels){ if (!other.dead && Math.hypot(other.x-bar.x, other.z-bar.z) < R) setTimeout(()=>explodeBarrel(other), 90); }
 }
 
 function endGame(){
