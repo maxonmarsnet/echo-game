@@ -919,7 +919,7 @@ let heroMixer = null, heroActions = {}, heroActive = '';
 let soldierGLTF = null;                                 // shared for enemy clones
 new GLTFLoader().load('Soldier.glb', (gltf)=>{
   soldierGLTF = gltf;
-  const model = gltf.scene;
+  const model = cloneSkeleton(gltf.scene);              // hero clone -> keeps the enemy source pristine
   model.traverse(o=>{ if (o.isMesh){ o.castShadow = true; o.frustumCulled = false; } });
   // scale to ~2 units tall and stand its feet on the avatar origin
   let box = new THREE.Box3().setFromObject(model);
@@ -927,13 +927,15 @@ new GLTFLoader().load('Soldier.glb', (gltf)=>{
   model.scale.setScalar(sc);
   box = new THREE.Box3().setFromObject(model);
   model.position.y = -box.min.y;
-  model.rotation.y = Math.PI;                          // face the aim direction (group -Z)
+  model.rotation.y = 0;                                // body faces the aim direction (group -Z)
   avatar.add(model);
-  for (const c of procParts){ if (c!==avGun && c!==avMuzzleTip) c.visible = false; }  // hide blocky body, keep the rifle
+  for (const c of procParts){ if (c!==avMuzzleTip) c.visible = false; }  // hide blocky body AND the floating gun
   heroMixer = new THREE.AnimationMixer(model);
   for (const clip of gltf.animations) heroActions[clip.name] = heroMixer.clipAction(clip);
   (heroActions['Idle'] || Object.values(heroActions)[0])?.play();
   heroActive = heroActions['Idle'] ? 'Idle' : '';
+  heroMixer.update(0.5);                                                  // settle into the idle pose...
+  attachRifleTo(model, avatar, -1);                                      // ...THEN place the rifle at the posed hand (barrel along aim, group -Z)
 }, undefined, (err)=>{ console.warn('hero model failed to load', err); });
 // world-space muzzle flash for the avatar's gun
 const tMuzzle = new THREE.PointLight(0xfff0c0, 0, 11, 2); scene.add(tMuzzle);
@@ -1350,11 +1352,42 @@ function makeTopper(acc){
 const cSkin = toon(0xc98b5e), cBoot = toon(0x15140f), cGun = toon(0x1c1c1c), cVest = toon(0x23251a);
 // enemy SOLDIER — a human commando (uniform = `color`, beret/helmet = `accent`). Faces -Z.
 // enemy from the real rigged model (cloned, tinted per squad, animated)
+function makeRifle(){
+  const r = new THREE.Group();
+  const metal = toon(0x4a525c), wood = toon(0x5a3a1c);   // lighter so it reads from top-down
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.1,0.16,0.66), metal); r.add(body);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,0.7,8), metal);
+  barrel.rotation.x=Math.PI/2; barrel.position.set(0,0.03,-0.6); r.add(barrel);
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.28,0.13), metal); mag.position.set(0,-0.2,0.03); mag.rotation.x=0.25; r.add(mag);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.14,0.4), wood); stock.position.set(0,-0.03,0.42); r.add(stock);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.07,0.2,0.08), metal); grip.position.set(0,-0.16,0.16); grip.rotation.x=-0.3; r.add(grip);
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0xffd23a}));
+  tip.position.set(0,0.03,-0.95); r.add(tip);                // bright muzzle so it's visible from above
+  return r;
+}
+// mount the rifle on the GROUP (avatar/g) so the barrel follows the clean group yaw, not the tilted hand bone.
+// barrel points the group's +Z = the way the soldier's body visually faces (verified in inspect.html).
+// fwd = +1 -> barrel along group +Z (enemies face +Z toward you); fwd = -1 -> group -Z (hero faces -Z = aim)
+function attachRifleTo(model, group, fwd=1){
+  group = group || model.parent;
+  const hand = model.getObjectByName('mixamorigRightHand') || model.getObjectByName('RightHand') || model.getObjectByName('mixamorig:RightHand');
+  if (!hand || !group) return null;
+  const rifle = makeRifle();
+  model.updateWorldMatrix(true, true); group.updateWorldMatrix(true, true);
+  const hp = group.worldToLocal(hand.getWorldPosition(new THREE.Vector3()));   // hand pos in group space
+  rifle.position.copy(hp);
+  rifle.position.z += 0.25 * fwd;            // a touch in front of the body
+  rifle.rotation.set(0, fwd>0 ? Math.PI : 0, 0);   // barrel along group +Z (fwd=1) or -Z (fwd=-1)
+  const gs = group.getWorldScale(new THREE.Vector3()).x || 1;
+  rifle.scale.setScalar(3.0/gs);             // sized to this model's oversized render
+  group.add(rifle);
+  return rifle;
+}
 function makeSoldierModel(color, s){
   const g = new THREE.Group();
   const model = cloneSkeleton(soldierGLTF.scene);
   let box = new THREE.Box3().setFromObject(model);
-  model.scale.setScalar(1.9/(box.max.y-box.min.y));
+  model.scale.setScalar(2.5/(box.max.y-box.min.y));     // a bit taller than the hero so they read clearly
   box = new THREE.Box3().setFromObject(model);
   model.position.y = -1.08 - box.min.y;                 // feet land where the procedural body's did
   model.rotation.y = Math.PI;
@@ -1365,6 +1398,8 @@ function makeSoldierModel(color, s){
   const mixer = new THREE.AnimationMixer(model);
   const clip = soldierGLTF.animations.find(c=>c.name==='Run') || soldierGLTF.animations[0];
   const act = mixer.clipAction(clip); act.play(); act.time = Math.random()*(clip.duration||1);
+  mixer.update(0.01);                                   // apply the posed frame...
+  attachRifleTo(model);                                 // ...THEN place the rifle at the posed hand
   return { group:g, bodyMat: bodyMat || toon(color), color, mixer };
 }
 function makeGhost(color, s, acc, accent=0x6a1414){

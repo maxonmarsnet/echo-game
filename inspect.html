@@ -1,0 +1,112 @@
+<!doctype html><html lang="en" translate="no"><head><meta charset="utf-8"><meta name="google" content="notranslate"><style>
+  html,body{margin:0;height:100%;background:#202824;overflow:hidden}
+  #views{display:flex;height:100vh}
+  .v{flex:1;position:relative;border-right:1px solid #000}
+  .lbl{position:absolute;top:8px;left:10px;color:#9fe;font:14px monospace;z-index:2}
+</style></head><body>
+<div id="views">
+  <div class="v" id="v34"><div class="lbl">3/4 VIEW (does he hold it? barrel forward?)</div></div>
+  <div class="v" id="vtop"><div class="lbl">TOP-DOWN (game camera ~ angle)</div></div>
+</div>
+<script type="importmap">{"imports":{
+  "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"
+}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+
+function toon(c){ return new THREE.MeshToonMaterial({ color:c }); }
+
+// ---- copied verbatim from the game ----
+function makeRifle(){
+  const r = new THREE.Group();
+  const metal = toon(0x4a525c), wood = toon(0x5a3a1c);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.1,0.16,0.66), metal); r.add(body);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,0.7,8), metal);
+  barrel.rotation.x=Math.PI/2; barrel.position.set(0,0.03,-0.6); r.add(barrel);
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.28,0.13), metal); mag.position.set(0,-0.2,0.03); mag.rotation.x=0.25; r.add(mag);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.14,0.4), wood); stock.position.set(0,-0.03,0.42); r.add(stock);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.07,0.2,0.08), metal); grip.position.set(0,-0.16,0.16); grip.rotation.x=-0.3; r.add(grip);
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0xffd23a}));
+  tip.position.set(0,0.03,-0.95); r.add(tip);
+  return r;
+}
+// mount the rifle on the GROUP (avatar/g) so the barrel follows the clean group yaw (= aim), not the tilted armature
+function attachRifleTo(model, group){
+  group = group || model.parent;
+  const hand = model.getObjectByName('mixamorigRightHand') || model.getObjectByName('RightHand') || model.getObjectByName('mixamorig:RightHand');
+  if (!hand || !group) { console.warn('NO HAND/GROUP'); return null; }
+  const rifle = makeRifle();
+  model.updateWorldMatrix(true, true); group.updateWorldMatrix(true, true);
+  const hp = group.worldToLocal(hand.getWorldPosition(new THREE.Vector3()));   // hand pos in group space
+  const fwd = -1;                            // HERO: barrel along group -Z (= aim)
+  rifle.position.copy(hp);
+  rifle.position.z += 0.25 * fwd;
+  rifle.rotation.set(0, fwd>0 ? Math.PI : 0, 0);
+  const gs = group.getWorldScale(new THREE.Vector3()).x || 1;
+  rifle.scale.setScalar(3.0/gs);
+  group.add(rifle);
+  return rifle;
+}
+// ----------------------------------------
+
+function makeRenderer(el){
+  const r = new THREE.WebGLRenderer({antialias:true});
+  r.setSize(el.clientWidth, el.clientHeight); r.setPixelRatio(2);
+  el.appendChild(r.domElement); return r;
+}
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x202824);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x202020, 1.1));
+const dl = new THREE.DirectionalLight(0xffffff, 1.4); dl.position.set(3,6,4); scene.add(dl);
+const grid = new THREE.GridHelper(8, 8, 0x335533, 0x223322); scene.add(grid);
+
+const el34 = document.getElementById('v34'), elTop = document.getElementById('vtop');
+const r34 = makeRenderer(el34), rTop = makeRenderer(elTop);
+const cam34 = new THREE.PerspectiveCamera(45, el34.clientWidth/el34.clientHeight, 0.1, 100);
+const camTop = new THREE.PerspectiveCamera(45, elTop.clientWidth/elTop.clientHeight, 0.1, 100);
+function fitCams(center, h){
+  cam34.position.set(9, 6, 12); cam34.lookAt(0, 3.0, 0);
+  camTop.position.set(0.01, 22, 7.5); camTop.lookAt(0, 2.6, 0);
+}
+fitCams(new THREE.Vector3(0,1.1,0), 2.4);
+
+let mixer = null;
+new GLTFLoader().load('Soldier.glb', (gltf)=>{
+  const model = cloneSkeleton(gltf.scene);
+  let box = new THREE.Box3().setFromObject(model);
+  model.scale.setScalar(2.2/(box.max.y-box.min.y));
+  box = new THREE.Box3().setFromObject(model);
+  model.position.y = -box.min.y;
+  model.rotation.y = 0;                        // HERO: body faces group -Z (= aim)
+  model.traverse(o=>{ if(o.isMesh){ o.material=o.material.clone(); o.material.color=new THREE.Color(0xb38b4a); }});
+  // mirror the HERO setup exactly: model inside an avatar group (scale 1.12, rotation.y=0 = aim -Z)
+  const avatar = new THREE.Group(); avatar.scale.setScalar(1.12); avatar.rotation.y = 0;
+  avatar.add(model); scene.add(avatar);
+  // play Idle like the game, settle one frame, THEN attach (matches game order + animated pose)
+  mixer = new THREE.AnimationMixer(model);
+  const clip = gltf.animations.find(c=>c.name==='Idle') || gltf.animations[0];
+  mixer.clipAction(clip).play(); mixer.update(0.4);
+  attachRifleTo(model, avatar);
+  const fb = new THREE.Box3().setFromObject(avatar);
+  const c = fb.getCenter(new THREE.Vector3());
+  fitCams(c, fb.max.y - fb.min.y);
+  // -Z arrow marks the forward/aim direction the barrel SHOULD match
+  const arrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), new THREE.Vector3(0,4,0), 3.5, 0xff4444, 0.8, 0.5);
+  scene.add(arrow);  // RED = world -Z (the game's 'forward/aim'); barrel should follow the FACE, not necessarily this
+  document.title = 'H='+(fb.max.y-fb.min.y).toFixed(2)+' cenY='+c.y.toFixed(2)+' minY='+fb.min.y.toFixed(2);
+}, undefined, e=>{ document.title='LOAD FAIL'; console.error(e); });
+
+const clock = new THREE.Clock();
+let frozen = 0;
+function loop(){
+  requestAnimationFrame(loop);
+  const dt = clock.getDelta();
+  if (mixer && frozen < 1.2){ mixer.update(dt); frozen += dt; }   // settle into the idle pose, then hold
+  r34.render(scene, cam34);
+  rTop.render(scene, camTop);
+}
+loop();
+</script></body></html>
