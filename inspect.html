@@ -68,8 +68,8 @@ const r34 = makeRenderer(el34), rTop = makeRenderer(elTop);
 const cam34 = new THREE.PerspectiveCamera(45, el34.clientWidth/el34.clientHeight, 0.1, 100);
 const camTop = new THREE.PerspectiveCamera(45, elTop.clientWidth/elTop.clientHeight, 0.1, 100);
 function fitCams(center, h){
-  cam34.position.set(9, 6, 12); cam34.lookAt(0, 3.0, 0);
-  camTop.position.set(0.01, 22, 7.5); camTop.lookAt(0, 2.6, 0);
+  cam34.position.set(7, 4.5, 9); cam34.lookAt(1.5, 1.8, 0);
+  camTop.position.set(1.5, 15, 5.5); camTop.lookAt(1.5, 1.2, 0);
 }
 fitCams(new THREE.Vector3(0,1.1,0), 2.4);
 
@@ -77,9 +77,12 @@ let mixer = null;
 new GLTFLoader().load('Soldier.glb', (gltf)=>{
   const model = cloneSkeleton(gltf.scene);
   let box = new THREE.Box3().setFromObject(model);
-  model.scale.setScalar(2.2/(box.max.y-box.min.y));
+  model.scale.setScalar(0.85/(box.max.y-box.min.y));   // NEW hero scale
   box = new THREE.Box3().setFromObject(model);
   model.position.y = -box.min.y;
+  // reference maze wall: 5 wide, 4.6 tall (the real game dimensions)
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(5,4.6,5), new THREE.MeshStandardMaterial({color:0x7e7a64}));
+  wall.position.set(4.5, 2.3, -1); scene.add(wall);
   model.rotation.y = 0;                        // HERO: body faces group -Z (= aim)
   model.traverse(o=>{ if(o.isMesh){ o.material=o.material.clone(); o.material.color=new THREE.Color(0xb38b4a); }});
   // mirror the HERO setup exactly: model inside an avatar group (scale 1.12, rotation.y=0 = aim -Z)

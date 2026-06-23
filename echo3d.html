@@ -15,8 +15,8 @@
     border:1px solid rgba(120,150,255,.35); background:rgba(10,14,30,.55);
     user-select:none; }
   #musicBtn.off { color:#6a7290; border-color:rgba(120,150,255,.18); }
-  #cross { display: none !important; }
-  #reticle { display: none !important; }   /* aim is shown by the laser beam instead */
+  #cross { opacity: 0; transition: opacity .12s; pointer-events: none; z-index: 5; }
+  #reticle { display: none !important; }
   /* custom sci-fi aim reticle (follows the mouse) */
   #reticle { position:absolute; left:50%; top:50%; width:46px; height:46px;
     transform:translate(-50%,-50%); pointer-events:none; z-index:20;
@@ -75,7 +75,7 @@
   @keyframes lowpulse { from{opacity:1;} to{opacity:.35;} }
 
   /* crosshair + hit marker */
-  #cross { position:absolute; left:50%; top:50%; width:22px; height:22px; transform:translate(-50%,-50%); }
+  #cross { position:absolute; width:24px; height:24px; transform:translate(-50%,-50%); }
   #cross::before, #cross::after { content:''; position:absolute; background:#cfe0ff; box-shadow:0 0 6px #7fc8ff; }
   #cross::before { left:50%; top:0; width:2px; height:100%; transform:translateX(-50%); }
   #cross::after { top:50%; left:0; height:2px; width:100%; transform:translateY(-50%); }
@@ -694,6 +694,16 @@ function flowField(x,z){
   }
   return dist;
 }
+// line of sight: is the straight line between two world points clear of walls?
+function hasLOS(ax, az, bx, bz){
+  const dx=bx-ax, dz=bz-az, dist=Math.hypot(dx,dz);
+  const steps=Math.max(1, Math.ceil(dist/(CELL*0.45)));   // sample ~2 points per cell
+  for (let i=1;i<steps;i++){
+    const t=i/steps, c=worldCell(ax+dx*t, az+dz*t);
+    if (!walk[c.r][c.c]) return false;                    // a wall blocks the view
+  }
+  return true;
+}
 // pick a walkable cell well away from the player to spawn a ghost
 function farOpenCell(minDist=28){
   for (let t=0;t<50;t++){
@@ -935,12 +945,14 @@ new GLTFLoader().load('Soldier.glb', (gltf)=>{
   for (const c of procParts){ if (c!==avMuzzleTip) c.visible = false; }  // hide blocky body AND the floating gun
   heroMixer = new THREE.AnimationMixer(model);
   for (const clip of gltf.animations) heroActions[clip.name] = heroMixer.clipAction(clip);
+  if (heroActions['Run']) heroActions['Run'].timeScale = 1.2;   // legs cadence tuned to the movement so feet don't slide (nor look frantic)
   (heroActions['Idle'] || Object.values(heroActions)[0])?.play();
   heroActive = heroActions['Idle'] ? 'Idle' : '';
   heroMixer.update(0.5);                                                  // settle into the idle pose...
   const heroRifle = attachRifleTo(model, avatar, -1);                    // ...THEN place the rifle at the posed hand (barrel along aim, group -Z)
-  const mz = heroRifle && heroRifle.getObjectByName('muzzle');           // align the laser + muzzle flash to the real barrel tip
+  const mz = heroRifle && heroRifle.getObjectByName('muzzle');           // align the muzzle flash to the real barrel tip...
   if (mz){ avatar.updateMatrixWorld(true); avMuzzleTip.position.copy(avatar.worldToLocal(mz.getWorldPosition(new THREE.Vector3()))); }
+  if (heroRifle) heroRifle.visible = false;                              // ...then hide the rifle visual (bullets still spawn from the muzzle point)
 }, undefined, (err)=>{ console.warn('hero model failed to load', err); });
 // world-space muzzle flash for the avatar's gun
 const tMuzzle = new THREE.PointLight(0xfff0c0, 0, 11, 2); scene.add(tMuzzle);
@@ -958,21 +970,13 @@ const laserDot = new THREE.Mesh(new THREE.SphereGeometry(0.12,10,10),
 scene.add(laserDot);
 const _sightMz = new THREE.Vector3(), _sightRt = new THREE.Vector3();
 function updateSight(){
-  const vis = started && !gameOver;
-  sight.visible = vis;
-  if (!vis){ laserDot.visible = false; return; }
-  avatar.updateMatrixWorld(true);
-  avMuzzleTip.getWorldPosition(_sightMz);                // beam starts exactly at the blaster muzzle
-  const MAXL = 12;                                       // short beam, not across the screen
-  let len = MAXL, hit = false;
-  for (let d=0.5; d<MAXL; d+=0.5){
-    if (blockedAt(_sightMz.x+aimDir.x*d, _sightMz.y, _sightMz.z+aimDir.z*d)){ len = d; hit = true; break; }
+  // laser sight removed — keep the 3D beam hidden and drive a crosshair cursor instead
+  sight.visible = false; laserDot.visible = false;
+  if (crossEl){
+    const show = started && !gameOver && !paused;
+    crossEl.style.opacity = show ? '1' : '0';
+    if (show){ crossEl.style.left = (CL+vmx)+'px'; crossEl.style.top = (CT+vmy)+'px'; }
   }
-  sight.position.copy(_sightMz);
-  sight.rotation.y = Math.atan2(aimDir.x, aimDir.z);
-  sight.scale.z = len;
-  laserDot.visible = hit;                                // dot only where the beam meets a wall
-  if (hit) laserDot.position.set(_sightMz.x + aimDir.x*len, _sightMz.y, _sightMz.z + aimDir.z*len);
 }
 
 // ---- THE DEVOURER's giant laser beam (charges, then fires; destroys walls) ----
@@ -1118,7 +1122,7 @@ const sfx = {
   launch(){ gunshot(true); },                  // realistic heavy bazooka report
   hit(){ bubblePop(); },                        // bubble pop on hitting an enemy
   kill(){ noise(0.3, 600, 0.6, 0.4, 'lowpass'); tone(160, 0.3, 0.25, 'sawtooth', 40); },
-  hurt(){ ouch(); },                            // "ouch" when you get hit
+  hurt(){},                                     // (ouch sound removed at Maksim's request)
   pickup(){ tone(660, 0.08, 0.18, 'sine'); setTimeout(()=>tone(990,0.1,0.18,'sine'),70); },
   dash(){ noise(0.25, 800, 0.4, 0.3, 'highpass'); },
   step(foot){                                  // footstep on hard floor
@@ -1405,7 +1409,7 @@ function makeSoldierModel(color, s){
   const act = mixer.clipAction(clip); act.play(); act.time = Math.random()*(clip.duration||1);
   mixer.update(0.01);                                   // apply the posed frame...
   attachRifleTo(model);                                 // ...THEN place the rifle at the posed hand
-  return { group:g, bodyMat: bodyMat || toon(color), color, mixer };
+  return { group:g, bodyMat: bodyMat || toon(color), color, mixer, runAct: act };
 }
 function makeGhost(color, s, acc, accent=0x6a1414){
   if (soldierGLTF) return makeSoldierModel(color, s);    // real model once it's loaded
@@ -1473,13 +1477,15 @@ function spawnWave() {
     const char = charger ? CHARGER_CHAR : heavy ? HEAVY_CHAR : CHARACTERS[Math.floor(Math.random()*CHARACTERS.length)];
     const scl = charger?0.85 : heavy?1.45 : 1.05;            // heavies are bigger
     const gh = makeGhost(char.color, scl, char.acc, char.eyes);
+    const spd = (charger?9:heavy?5:7)*sc;            // move energetically, close to the player's pace
+    if (gh.runAct) gh.runAct.timeScale = Math.max(0.4, Math.min(1.8, 0.134*spd/scl));  // leg cadence matches ground speed
     const cp = farOpenCell(26);
     gh.group.position.set(cp.x, charger?0.95:1.15, cp.z);
     scene.add(gh.group);
     spawnRing(new THREE.Vector3(cp.x, 0.05, cp.z), char.color, heavy?6:4, true, heavy?0.9:0.7);
     enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, mixer: gh.mixer, col: char.color, char, label: makeLabel(char),
       spotted:false, tauntT:0,
-      hp: charger?1:heavy?5:2, maxhp: charger?1:heavy?5:2, speed: (charger?7:heavy?1.9:3.2)*sc, charger, heavy, ghost:true,
+      hp: charger?1:heavy?5:2, maxhp: charger?1:heavy?5:2, speed: spd, charger, heavy, ghost:true,
       rad: charger?1.0:heavy?1.6:1.3, baseY: charger?0.95:1.15, phase: Math.random()*6.28,
       hit:0, fireCd: charger?0:heavy?0.9+Math.random():1.5+Math.random()*2, burst: heavy?2:undefined, stepCd: Math.random()*0.4 });
   }
@@ -1490,6 +1496,7 @@ function spawnWave() {
 function spawnFinalBoss(){
   const char = BOSS_CHAR;
   const gh = makeGhost(char.color, 1.7, char.acc, char.eyes);   // fits the maze corridors
+  if (gh.runAct) gh.runAct.timeScale = Math.max(0.4, Math.min(1.8, 0.134*5.5/1.7));
   const cp = farOpenCell(30);
   gh.group.position.set(cp.x, 1.8, cp.z);
   scene.add(gh.group);
@@ -1498,7 +1505,7 @@ function spawnFinalBoss(){
   shake=Math.max(shake,1.0); flashScreen(0.4,'255,60,90');
   enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, col: char.color, char, label: makeLabel(char),
     spotted:false, tauntT:0,
-    hp:14, maxhp:14, speed:3.6, charger:false, boss:true, final:true, ghost:true,
+    hp:14, maxhp:14, speed:5.5, charger:false, boss:true, final:true, ghost:true,
     rad:1.5, baseY:1.8, phase:0, hit:0, fireCd:1.2, stepCd:0.3,
     beamPhase:'idle', beamCd:3.5, beamTimer:0, beamAngle:0 });
 }
@@ -1506,6 +1513,7 @@ function spawnFinalBoss(){
 function spawnBoss() {
   const char = BOSS_CHAR;
   const gh = makeGhost(char.color, 1.5, char.acc, char.eyes);   // corridor-sized
+  if (gh.runAct) gh.runAct.timeScale = Math.max(0.4, Math.min(1.8, 0.134*5/1.5));
   const cp = farOpenCell(30);
   gh.group.position.set(cp.x, 1.6, cp.z);
   scene.add(gh.group);
@@ -1513,7 +1521,7 @@ function spawnBoss() {
   spawnRing(new THREE.Vector3(cp.x, 0.05, cp.z), char.color, 9, true, 1.0);
   enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, col: char.color, char, label: makeLabel(char),
     spotted:false, tauntT:0,
-    hp:4, maxhp:4, speed:2.8, charger:false, boss:true, ghost:true,
+    hp:4, maxhp:4, speed:5, charger:false, boss:true, ghost:true,
     rad:1.4, baseY:1.6, phase:0, hit:0, fireCd:1.8, stepCd: 0.2 });
 }
 
@@ -1902,7 +1910,12 @@ function update(dt){
   }
   const bobY = (moveIntent && !heroMixer) ? Math.abs(Math.sin(walkPhase))*0.07 : 0;
   avatar.position.set(player.pos.x, bobY, player.pos.z);
-  avatar.rotation.y = Math.atan2(-aimDir.x, -aimDir.z);
+  // face the way you MOVE while moving; face the aim (mouse) when standing still — smooth turn
+  const targetYaw = moveIntent ? Math.atan2(-wish.x, -wish.z) : Math.atan2(-aimDir.x, -aimDir.z);
+  let dYaw = targetYaw - avatar.rotation.y;
+  while (dYaw >  Math.PI) dYaw -= Math.PI*2;
+  while (dYaw < -Math.PI) dYaw += Math.PI*2;
+  avatar.rotation.y += dYaw * Math.min(1, dt*14);
   // echo shield bubble
   if (shieldT > 0){
     shieldT -= dt; shield.visible = true;
@@ -2008,22 +2021,43 @@ function update(dt){
     const toP=new THREE.Vector3().subVectors(PP,e.mesh.position); toP.y=0;
     const d=toP.length(); toP.normalize();
     if (d < nearestEnemy) nearestEnemy = d;
-    // steer down the flow-field gradient through corridors; rush straight when close
-    let steer = toP;
-    if (field && d > CELL*1.3){
-      const ec = clampCell(Math.round((e.mesh.position.z-OZ)/CELL), Math.round((e.mesh.position.x-OX)/CELL));
-      let best=null, bestD=field[ec.r][ec.c];
-      for (const [dr,dc] of DIRS){ const nr=ec.r+dr, nc=ec.c+dc;
-        if (nr>=0&&nr<ROWS&&nc>=0&&nc<COLS&&walk[nr][nc]&&field[nr][nc]<bestD){ bestD=field[nr][nc]; best={r:nr,c:nc}; } }
-      if (best){ const cp=cellPos(best.r,best.c);
-        steer = new THREE.Vector3(cp.x-e.mesh.position.x, 0, cp.z-e.mesh.position.z).normalize(); }
+    // --- LINE OF SIGHT + short memory of where you were last seen ---
+    const los = d < 75 && hasLOS(e.mesh.position.x, e.mesh.position.z, PP.x, PP.z);
+    e.los = los;
+    if (los){ e.seenT = 2.5; e.lsx = PP.x; e.lsz = PP.z; }
+    else if (e.seenT > 0) e.seenT -= dt;
+    // --- steering: ENGAGE when seen (range-keep + strafe/dodge), HUNT via flow-field when not ---
+    let steer;
+    if (los && frightened<=0){
+      e.strafeT = (e.strafeT||0) - dt;
+      if (e.strafeT <= 0){ e.strafeDir = Math.random()<0.5?1:-1; e.strafeT = 0.5+Math.random()*0.9; }
+      const perp = new THREE.Vector3(-toP.z, 0, toP.x).multiplyScalar(e.strafeDir);  // sidestep
+      const pref = e.charger ? 1.4 : (e.heavy ? 9 : 13);        // chargers close in; gunners keep distance
+      const reloading = e.heavy && e.burst>=2;                  // heavy backs to cover while reloading
+      const mv = new THREE.Vector3();
+      if (d > pref+2) mv.add(toP);                              // advance into range
+      else if (d < pref-2 || reloading) mv.addScaledVector(toP, -1);   // back off / take cover
+      mv.addScaledVector(perp, e.charger?0.35:0.9);             // strafe to dodge fire
+      steer = mv.lengthSq()>0.0001 ? mv.normalize() : toP;
+    } else {
+      // hunt the (last-seen) player through corridors via the flow field
+      steer = toP;
+      if (field && d > CELL*1.3){
+        const ec = clampCell(Math.round((e.mesh.position.z-OZ)/CELL), Math.round((e.mesh.position.x-OX)/CELL));
+        let best=null, bestD=field[ec.r][ec.c];
+        for (const [dr,dc] of DIRS){ const nr=ec.r+dr, nc=ec.c+dc;
+          if (nr>=0&&nr<ROWS&&nc>=0&&nc<COLS&&walk[nr][nc]&&field[nr][nc]<bestD){ bestD=field[nr][nc]; best={r:nr,c:nc}; } }
+        if (best){ const cp=cellPos(best.r,best.c);
+          steer = new THREE.Vector3(cp.x-e.mesh.position.x, 0, cp.z-e.mesh.position.z).normalize(); }
+      }
     }
-    const spd = e.speed * (frightened>0 ? 0.5 : 1);   // power pellet slows ghosts
+    const spd = e.speed * (frightened>0 ? 0.5 : (los?1:0.92));   // power pellet slows ghosts
     e.mesh.position.addScaledVector(steer, spd*wdt);
     resolveCircle(e.mesh.position, e.rad*0.8);         // soldiers blocked by maze walls
     if (e.mixer) e.mixer.update(dt);                    // animate the rigged model
-    // face the player + slight bob through the corridors
-    e.mesh.rotation.y = Math.atan2(PP.x - e.mesh.position.x, PP.z - e.mesh.position.z);
+    // face the player when seen, else face the way they're moving (don't stare through walls)
+    const faceX = los ? PP.x : e.mesh.position.x + steer.x, faceZ = los ? PP.z : e.mesh.position.z + steer.z;
+    e.mesh.rotation.y = Math.atan2(faceX - e.mesh.position.x, faceZ - e.mesh.position.z);
     e.mesh.position.y = e.baseY + Math.sin(performance.now()*0.004*Math.max(T,0.15) + e.phase)*(e.mixer?0.03:0.08);
     // colour: frightened blue, else its own hue; flash white on hit
     e.bodyMat.emissiveIntensity = e.hit>0 ? 3.5 : 0.45;
@@ -2033,7 +2067,7 @@ function update(dt){
     if (e.final) updateBossBeam(e, dt);                    // giant beam attack
     if (!e.charger && frightened<=0 && !(e.final && e.beamPhase!=='idle')){
       e.fireCd-=wdt;
-      if (e.fireCd<=0 && d<70){
+      if (e.fireCd<=0 && los){                 // only fire when they actually SEE you (no shooting through walls)
         if (e.boss){ bossShoot(e); e.fireCd = 2.4; }
         else if (e.heavy){                                  // 3-round burst, then a reload pause
           enemyShoot(e);
@@ -2408,7 +2442,7 @@ function explodeBarrel(bar){
 }
 
 function endGame(){
-  ads=false; gun.visible=true; scopeEl.style.opacity=0; crossEl.style.opacity=1;
+  ads=false; gun.visible=false; scopeEl.style.opacity=0; crossEl.style.opacity=1;   // top-down: keep the first-person weapon hidden
   shake=1.5; flashScreen(0.7,'255,80,80'); sfx.over();
   document.exitPointerLock();
   const isBest = score > best.score;
@@ -2430,7 +2464,7 @@ function win(){
   if (won) return;
   won = true; gameOver = true;
   bossBeam.visible = false; bossBeamLight.intensity = 0;
-  ads=false; gun.visible=true; scopeEl.style.opacity=0; crossEl.style.opacity=1;
+  ads=false; gun.visible=false; scopeEl.style.opacity=0; crossEl.style.opacity=1;   // top-down: keep the first-person weapon hidden
   shake=2.0; flashScreen(0.9,'255,255,200');
   // celebratory fireworks
   for (let k=0;k<6;k++) setTimeout(()=>{
