@@ -49,6 +49,8 @@
   .lbl { font-size:10px; letter-spacing:3px; color:#7f9bdd; text-transform:uppercase; opacity:.8; }
   /* wave / score */
   #waveNum { font-size:30px; letter-spacing:4px; color:#cfe0ff; text-shadow:0 0 14px rgba(120,160,255,.8); }
+  #waveSub { font-size:11px; letter-spacing:1.5px; color:#8fa6c8; margin-top:3px; }
+  #waveSub span { color:#ffd479; }
   #scoreNum { font-size:26px; letter-spacing:3px; color:#ffd479; text-shadow:0 0 14px rgba(255,200,100,.7); }
 
   /* health */
@@ -181,6 +183,7 @@
   <div class="panel tl">
     <div class="lbl">Wave</div>
     <div id="waveNum">01</div>
+    <div id="waveSub"><span id="killNum">0</span> kills · <span id="leftNum">0</span> left</div>
   </div>
   <!-- top-right: score -->
   <div class="panel tr">
@@ -935,7 +938,9 @@ new GLTFLoader().load('Soldier.glb', (gltf)=>{
   (heroActions['Idle'] || Object.values(heroActions)[0])?.play();
   heroActive = heroActions['Idle'] ? 'Idle' : '';
   heroMixer.update(0.5);                                                  // settle into the idle pose...
-  attachRifleTo(model, avatar, -1);                                      // ...THEN place the rifle at the posed hand (barrel along aim, group -Z)
+  const heroRifle = attachRifleTo(model, avatar, -1);                    // ...THEN place the rifle at the posed hand (barrel along aim, group -Z)
+  const mz = heroRifle && heroRifle.getObjectByName('muzzle');           // align the laser + muzzle flash to the real barrel tip
+  if (mz){ avatar.updateMatrixWorld(true); avMuzzleTip.position.copy(avatar.worldToLocal(mz.getWorldPosition(new THREE.Vector3()))); }
 }, undefined, (err)=>{ console.warn('hero model failed to load', err); });
 // world-space muzzle flash for the avatar's gun
 const tMuzzle = new THREE.PointLight(0xfff0c0, 0, 11, 2); scene.add(tMuzzle);
@@ -1246,7 +1251,7 @@ function ejectCasing(){
     av:new THREE.Vector3(Math.random()*20-10,Math.random()*20-10,Math.random()*20-10) });
   scene.add(m);
 }
-let started=false, gameOver=false, wave=0, score=0, timePulse=0, shake=0, moveIntent=false;
+let started=false, gameOver=false, wave=0, score=0, kills=0, timePulse=0, shake=0, moveIntent=false;
 let hasBazooka=false, ads=false;   // ads = aiming through the scope
 let frightened=0;                  // power-pellet timer (ghosts flee/slow)
 let firing=false, fireCd=0;        // hold-to-fire
@@ -1362,7 +1367,7 @@ function makeRifle(){
   const stock = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.14,0.4), wood); stock.position.set(0,-0.03,0.42); r.add(stock);
   const grip = new THREE.Mesh(new THREE.BoxGeometry(0.07,0.2,0.08), metal); grip.position.set(0,-0.16,0.16); grip.rotation.x=-0.3; r.add(grip);
   const tip = new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0xffd23a}));
-  tip.position.set(0,0.03,-0.95); r.add(tip);                // bright muzzle so it's visible from above
+  tip.position.set(0,0.03,-0.95); tip.name='muzzle'; r.add(tip);   // bright muzzle so it's visible from above
   return r;
 }
 // mount the rifle on the GROUP (avatar/g) so the barrel follows the clean group yaw, not the tilted hand bone.
@@ -1446,6 +1451,7 @@ const CHARACTERS = [
   { name:"DELTA",   color:0x5a5240, eyes:0x2a2a2a, acc:'none', taunt:"Take the shot!" },           // sand
 ];
 const CHARGER_CHAR = { name:"RUSHER",     color:0x4a3a26, eyes:0x6a1414, acc:'none',  taunt:"Flanking!" };
+const HEAVY_CHAR   = { name:"HEAVY",      color:0x6b2a1a, eyes:0xff7a30, acc:'none',  taunt:"Eat lead!" };   // tanky burst-fire gunner
 const BOSS_CHAR    = { name:"THE WARLORD", color:0x2e3826, eyes:0x6a1414, acc:'crown', taunt:"I run this jungle." };
 
 const uiEl = document.getElementById('ui');
@@ -1463,17 +1469,19 @@ function spawnWave() {
   const sc = 1 + Math.min(wave*0.035, 0.7);          // enemies get faster over time
   for (let i=0;i<n;i++){
     const charger = Math.random() < Math.min(0.15 + wave*0.05, 0.55);
-    const char = charger ? CHARGER_CHAR : CHARACTERS[Math.floor(Math.random()*CHARACTERS.length)];
-    const gh = makeGhost(char.color, charger?0.85:1.05, char.acc, char.eyes);
+    const heavy   = !charger && wave>=2 && Math.random() < Math.min(0.10 + wave*0.03, 0.35);
+    const char = charger ? CHARGER_CHAR : heavy ? HEAVY_CHAR : CHARACTERS[Math.floor(Math.random()*CHARACTERS.length)];
+    const scl = charger?0.85 : heavy?1.45 : 1.05;            // heavies are bigger
+    const gh = makeGhost(char.color, scl, char.acc, char.eyes);
     const cp = farOpenCell(26);
     gh.group.position.set(cp.x, charger?0.95:1.15, cp.z);
     scene.add(gh.group);
-    spawnRing(new THREE.Vector3(cp.x, 0.05, cp.z), char.color, 4, true, 0.7);
+    spawnRing(new THREE.Vector3(cp.x, 0.05, cp.z), char.color, heavy?6:4, true, heavy?0.9:0.7);
     enemies.push({ mesh: gh.group, bodyMat: gh.bodyMat, mixer: gh.mixer, col: char.color, char, label: makeLabel(char),
       spotted:false, tauntT:0,
-      hp: charger?1:2, maxhp: charger?1:2, speed: (charger?7:3.2)*sc, charger, ghost:true,
-      rad: charger?1.0:1.3, baseY: charger?0.95:1.15, phase: Math.random()*6.28,
-      hit:0, fireCd: charger?0:1.5+Math.random()*2, stepCd: Math.random()*0.4 });
+      hp: charger?1:heavy?5:2, maxhp: charger?1:heavy?5:2, speed: (charger?7:heavy?1.9:3.2)*sc, charger, heavy, ghost:true,
+      rad: charger?1.0:heavy?1.6:1.3, baseY: charger?0.95:1.15, phase: Math.random()*6.28,
+      hit:0, fireCd: charger?0:heavy?0.9+Math.random():1.5+Math.random()*2, burst: heavy?2:undefined, stepCd: Math.random()*0.4 });
   }
   if (wave % 3 === 0) spawnBoss();          // a mini-boss every 3rd wave
 }
@@ -1807,7 +1815,8 @@ function rebuildAmmoPips(){
   lastAmmo=-1;   // force HUD refresh
 }
 
-let lastWave=0, lastScore=-1, lastAmmo=-1, lastHp=-1, lastDash=null, lastEcho=null;
+let lastWave=0, lastScore=-1, lastAmmo=-1, lastHp=-1, lastDash=null, lastEcho=null, lastKills=-1, lastLeft=-1;
+const elKills=$('killNum'), elLeft=$('leftNum');
 rebuildAmmoPips();
 function announce(txt){ elAnnounce.textContent=txt; elAnnounce.classList.remove('show'); void elAnnounce.offsetWidth; elAnnounce.classList.add('show'); }
 function hitMark(){ elHitmark.classList.remove('show'); void elHitmark.offsetWidth; elHitmark.classList.add('show'); }
@@ -1815,6 +1824,8 @@ function hitMark(){ elHitmark.classList.remove('show'); void elHitmark.offsetWid
 function updateHUD(){
   if (wave!==lastWave){ elWave.textContent=String(wave).padStart(2,'0'); lastWave=wave; }
   if (score!==lastScore){ elScore.textContent=score; lastScore=score; }
+  if (kills!==lastKills){ if (elKills) elKills.textContent=kills; lastKills=kills; }
+  if (enemies.length!==lastLeft){ if (elLeft) elLeft.textContent=enemies.length; lastLeft=enemies.length; }
   if (player.hp!==lastHp){
     hpPips.forEach((p,i)=>{ p.className='pip '+(i<player.hp?'on':'off'); });
     elHpRow.classList.toggle('low', player.hp===1);
@@ -2022,8 +2033,12 @@ function update(dt){
     if (!e.charger && frightened<=0 && !(e.final && e.beamPhase!=='idle')){
       e.fireCd-=wdt;
       if (e.fireCd<=0 && d<70){
-        if (e.boss) bossShoot(e); else enemyShoot(e);
-        e.fireCd = e.boss ? 2.4 : 2.2+Math.random()*1.5;
+        if (e.boss){ bossShoot(e); e.fireCd = 2.4; }
+        else if (e.heavy){                                  // 3-round burst, then a reload pause
+          enemyShoot(e);
+          if (e.burst>0){ e.burst--; e.fireCd = 0.14; }
+          else { e.burst = 2; e.fireCd = 1.6+Math.random()*1.1; }
+        } else { enemyShoot(e); e.fireCd = 2.2+Math.random()*1.5; }
       }
     }
     if (d < e.rad+0.6) hurtPlayer();
@@ -2217,9 +2232,10 @@ function update(dt){
 
 function killEnemy(e){
   const boss = e.boss;
+  kills++;                                            // lifetime kill count
   combo++; comboT = 3.2;                              // keep the chain alive
   const mult = 1 + Math.floor(combo/5)*0.5;           // x1.5 @5, x2 @10, x2.5 @15...
-  score += Math.round((boss?100:(e.charger?25:15)) * mult);
+  score += Math.round((boss?100:e.heavy?40:(e.charger?25:15)) * mult);
   const model = !!e.mixer;
   const col = boss?0x3a7bff:(e.charger?0xff5050:0xff9030);
   spark(e.mesh.position, model?0xc0402a:col, boss?44:18, boss?18:12);
@@ -2229,10 +2245,11 @@ function killEnemy(e){
   shake=Math.max(shake, boss?1.1:0.45); hitStop=Math.max(hitStop, boss?0.1:0.05);
   aberrate(boss?0.012:0.004); sfx.kill();
   if (boss) announce('BOSS DOWN');
-  for (let k=0; k<(boss?3:1); k++){            // boss drops extra ammo
+  const drops = boss?3:e.heavy?2:1;            // bosses + heavies drop extra ammo
+  for (let k=0; k<drops; k++){
     const m=new THREE.Mesh(pickGeo, pickMat.clone());
     m.position.copy(e.mesh.position); m.position.y=1;
-    m.position.x += (Math.random()-.5)*(boss?3:0); m.position.z += (Math.random()-.5)*(boss?3:0);
+    m.position.x += (Math.random()-.5)*(boss||e.heavy?3:0); m.position.z += (Math.random()-.5)*(boss||e.heavy?3:0);
     scene.add(m); pickups.push({ mesh:m, life:18, spin:0 });
   }
   if (e.label) e.label.remove();
