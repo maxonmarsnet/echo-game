@@ -1980,7 +1980,8 @@ function update(dt){
     if (b.friendly){
       for (const e of enemies){
         if (e.hp<=0) continue;
-        if (b.mesh.position.distanceTo(e.mesh.position) < (e.rad + (b.rocket?0.4:0.1))){
+        // horizontal (top-down) hit test — independent of muzzle/enemy height
+        if (Math.hypot(b.mesh.position.x-e.mesh.position.x, b.mesh.position.z-e.mesh.position.z) < (e.rad + (b.rocket?0.4:0.1))){
           dead=true;
           if (b.rocket) break;            // rocket: AoE handled on detonation below
           e.hp--; e.hit=0.12;
